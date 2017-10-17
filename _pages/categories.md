@@ -7,6 +7,7 @@ permalink: /categories/
 <link rel="stylesheet" href="/assets/css/globals/responsive.css">
 <link rel="stylesheet" href="/assets/css/globals/index.css">
 
+<div id="main" role="main">
 <section class="container content">
     <div class="columns">
         <div class="column three-fourths">
@@ -18,8 +19,7 @@ permalink: /categories/
                     <ol class="posts-list" id="{{ category[0] }}">
                         {% for post in category.last %}
                         <li class="posts-list-item">
-                            <span class="posts-list-meta">{{ post.date | date:"%Y-%m-%d" }}</span>
-                            <a class="posts-list-name" href="{{ post.url }}">{{ post.title }}</a>
+                            <span class="posts-list-meta">{{ post.date | date:"%Y-%m-%d" }}</span> <a class="posts-list-name" href="{{ post.url }}">{{ post.title }}</a>
                         </li>
                         {% endfor %}
                     </ol>
@@ -33,5 +33,6 @@ permalink: /categories/
         </div>
     </div>
 </section>
+</div>
 
 
