@@ -1,5 +1,7 @@
 ---
 title: "Markup: HTML Tags and Formatting"
+excerpt: A variety of common markup showing how the theme styles them.
+layout: post
 categories:
   - Markup
 tags:
@@ -8,7 +10,10 @@ tags:
   - formatting
   - html
   - markup
+
 ---
+
+{% include toc %}
 
 A variety of common markup showing how the theme styles them.
 

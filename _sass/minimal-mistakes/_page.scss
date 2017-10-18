@@ -53,6 +53,39 @@
   }
 }
 
+.page_post {
+
+  @include breakpoint($large) {
+    float: right;
+    width: calc(100% - #{$right-sidebar-width-narrow});
+    padding-right: $right-sidebar-width-narrow;
+  }
+
+  @include breakpoint($x-large) {
+    width: calc(100% - 100px);
+    padding-right: $right-sidebar-width;
+  }
+
+  .page__inner-wrap {
+    float: left;
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
+    clear: both;
+
+    .page__content,
+    .page__meta,
+    .page__share {
+      position: relative;
+      float: left;
+      margin-left: 0;
+      margin-right: 0;
+      width: 100%;
+      clear: both;
+    }
+  }
+}
+
 .page__title {
   margin-top: 0;
   line-height: 1;
