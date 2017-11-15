@@ -1,5 +1,5 @@
 ---
-title: Redis源码阅读(一) -- EventLoop
+title: Redis源码阅读(一) -- eventLoop
 excerpt: 介绍Redis提供服务的主要流程——事件循环。
 layout: post
 categories: Redis
