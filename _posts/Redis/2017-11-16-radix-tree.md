@@ -1,5 +1,5 @@
 ---
-title: Redis源码阅读(六) -- radix tree
+title: Redis源码阅读(七) -- radix tree
 excerpt: 介绍Redis内radix tree实现。
 layout: post
 categories: Redis
