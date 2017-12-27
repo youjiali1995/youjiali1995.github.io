@@ -352,7 +352,7 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 在`serverCron()`中每秒调用一次`replicationCron()`处理建立连接和一些周期性任务:
 * 超时: 连接超时、`rdb`传输超时、`master` `ping`超时
 * `server.repl_state == REPL_STATE_CONNECT`时，建立连接。连接使用非阻塞`connect`，并注册可读可写文件事件`syncWithMaster()`，设置`server.repl_state = REPL_STATE_CONNECTING`
-* `slave`发送`REPLCONF ACK`
+* `slave`发送`REPLCONF ACK`。`master`用于更新`slave->repl_ack_off`，用在`Wait`命令中，实现同步复制
 * `master`定期(`repl-ping-slave-period`)发送`ping`，`slave`可以根据`server.master.lastinteraction`判断`master`超时
 * 处理超时`slave`
 * 根据`repl-backlog-ttl`，释放`repl_back`
@@ -363,6 +363,7 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 * `slave`: 在释放`master`之前，会调用`replicationCacheMaster()`将`master`状态保存在`server.cached_master`，然后调用`replicationHandleMasterDisconnection()`更新状态为`REPL_STATE_CONNECT`，
 会在之后尝试重连，并发送`server.cached_master`状态尝试`paritial resync`
 
+可以看到，在连接已经成功建立后，`master`不会再对`slave`的`reploff`进行判断是否要进行`full sync`。`Redis`依赖`tcp`的“可靠性”，认为要么超时、要么报错，否则数据一定会到达`slave`。
 
 ## 重启
 `rdbPopulateSaveInfo()`在下面几种情况下会返回非`NULL`:
