@@ -33,6 +33,7 @@ categories: Redis
 `Redis`使用`I/O`多路复用来处理两类事件：
   * `TimeEvent`
   * `FileEvent`
+
 在`redisServer`结构体中包含`aeEventLoop *el`这一成员，结构如下:
 
 ```c

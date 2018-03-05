@@ -8,7 +8,7 @@ categories: Redis
 {% include toc %}
 
 ## slaveof
-配置`redis.conf`中`slaveof <masterip> <masterport>`或使用`slaveof`命令，会进行设置:
+配置`redis.conf`中`slaveof <masterip> <masterport>`或使用`slaveof`命令，会调用`replicationSetMaster()`进行设置:
 ```c
 server.masterhost = sdsnew(argv[1]);
 server.masterport = atoi(argv[2]);
@@ -358,8 +358,8 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 * 根据`repl-backlog-ttl`，释放`repl_back`
 * 创建`rdb`
 
-当出现超时时，会调用`freeClient()`释放连接，`master`和`slave`有不同的操作:
-* `master`: 关闭连接，`slave`会读0，同时调用`freeClient()`释放`master`
+当出现超时或套接字关闭时，会调用`freeClient()`释放连接，`master`和`slave`有不同的操作:
+* `master`: 关闭连接，释放`client`，`slave`会读0
 * `slave`: 在释放`master`之前，会调用`replicationCacheMaster()`将`master`状态保存在`server.cached_master`，然后调用`replicationHandleMasterDisconnection()`更新状态为`REPL_STATE_CONNECT`，
 会在之后尝试重连，并发送`server.cached_master`状态尝试`paritial resync`
 
@@ -426,7 +426,7 @@ if (rdbLoad(server.rdb_filename,&rsi) == C_OK) {
     server.second_replid_offset = server.master_repl_offset+1;
     changeReplicationId();
 ```
-所以`server.replid2`和`server.second_replid_offset`保存了与之前`master`的同步进度，同时`server.repl_backlog`还保存着之前`master`同步过来的数据，用于之后的`parital resyn`。
+所以`server.replid2`和`server.second_replid_offset`保存了与之前`master`的同步进度，同时`server.repl_backlog`还保存着之前`master`同步过来的数据，用于之后的`parital resync`。
 2. 发送`slaveof B.ip B.port`给`A`: `A`会调用`replicationSetMaster()->replicationCacheMasterUsingMyself()`以自己状态创建`cached_master`，用于之后的同步:
 ```c
 server.cached_master.reploff = server.master_repl_offset;
@@ -462,7 +462,9 @@ if (server.cached_master) {
     }
 ```
 
-可以看到`A`以自己的状态发送给`B`尝试重连，而`B`同样会根据之前`A`的状态，判断是否需要`full sync`，当然如果在这期间有很多写操作，更新了`B`的`repl_backlog`，还是会`full sync`。
+可以看到`A`以自己的状态发送给`B`尝试重连，而`B`同样会根据之前`A`的状态，判断是否需要`full sync`，当然如果在这期间有很多写操作，更新了`B`的`repl_backlog`，还是会`full sync`。  
+
+要注意如果以这种方式进行`failover`，如果在两次`slaveof`命令之间又有新的写入到旧的`master`可能会丢失数据，而且需要`full sync`。`cluster`模式的手动`failover`会在过程中拒绝`master`的流量。
 
 ## expire
 `slave`不会主动进行`expire`，在调用`activeExpireCycle()`前会先判断是否存在`master`，存在则不进行。同样`expireIfNeeded()`只会返回逻辑上的过期，不会删`key`:
