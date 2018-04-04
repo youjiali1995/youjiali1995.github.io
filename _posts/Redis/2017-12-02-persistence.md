@@ -1,5 +1,5 @@
 ---
-title: Redis源码阅读(十) -- 持久化
+title: Redis源码阅读(十) -- persistence
 excerpt: 介绍Redis 持久化相关实现。
 layout: post
 categories: Redis
