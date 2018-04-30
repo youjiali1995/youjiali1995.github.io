@@ -1,0 +1,100 @@
+---
+title: Raft 笔记
+layout: post
+categories:
+  - Distributed
+  - Raft
+---
+
+{% include toc %}
+
+今年1月份花了几个周末时间把 `6.824` 做了一下，`lab 4` 还有一些没做完，因为设计的问题，导致实现数据迁移同时可以接受请求会比较麻烦，然后就搁置了(思路和 `Redis` 类似)。
+做这门课程最主要的目的还是学习一下 `Raft`，在这里记录一些要点，主要的参考资料是2篇论文: [raft-extended](https://raft.github.io/raft.pdf)、[raft-thesis](https://ramcloud.stanford.edu/~ongaro/thesis.pdf)。
+
+## Raft 协议
+在分布式系统中通常通过 `replication` 来进行容错，提高系统的可用性。这就带来另外一个问题：如何保证每个 `replica` 的状态一致。一致性算法(`Consensus algorithm`)就是为了
+解决这个问题，它能够在保证在部分节点出错(非拜占庭错误)或网络分区的情况下，整个集群依然能够像单机一样提供一致的服务。  
+
+`Raft` 就是一种一致性算法，设计的主要目标是 `understandability`。它主要由下面三个子问题组成:
+* *Leader election*
+* *Log replication*
+* *Safety*
+
+## Raft 基本概念
+`Raft` 的每个节点会处于下面三种状态之一，正常情况下只有1个 `leader`，其余都是 `follower`:
+* *Leader*: 接收客户端请求，管理 `follower`
+* *Candidate*: 触发 `leader election`，竞选成为 `leader`
+* *Follower*: 接收 `leader` 或 `candidate` 的请求
+![images](/assets/images/raft_state.png)
+
+`Raft` 将时间划分为 `term`，每个 `term` 由单个 `leader` 管理，`term` 顺序递增，当 `candidate` 触发 `leader election` 时会增加 `term`。`term` 充当了逻辑时钟的作用，
+用于检测消息和自己的状态是否 `stale`。
+![images](/assets/images/raft_term.png)
+
+## Leader Election
+每个节点都有一个 `election timeout`，当收到合法 `leader` 的消息时，会重置 `timeout`；若超时，则触发 `leader election`:
+* 增加 `term`，成为 `candidate`
+* 投票给自己
+* 发送 `RequestVote RPC` 给其他所有节点
+
+在每个 `term`，`follower` 只会给一个 `candidate` 投票，按照 `first-come-first-served` 原则，除此之外，还需要有其他的限制，防止 `stale` 的节点成为 `leader`。
+若 `candidate` 在它竞选的 `term` 收到了 `majority` 的投票，就赢得了选举，成为这个 `term` 的 `leader`。
+`leader` 为了维持自己的任期，会定时发送 `heartbeat` 给其他节点(`heartbeat timeout`)。需要保证 `election timeout` 比 `heartbeat timeout` 大，一般为 `10` 倍。  
+
+`Raft` 保证了每个 `term` 只会有一个 `leader`，但有可能会有多个 `candidate` 同时选举，导致
+每个 `candidate` 都没有收到 `majority` 的投票，若 `candidate` 在 `election timeout` 中没有新的 `leader` 产生，则会重新进行 `leader election`，但这会降低系统的可用性。
+为了减少这种情况的发生，`Raft` 使用 `randomized election timeouts`：每个节点在开始 `leader election` 时，会随机设置一个区间范围内的 `election timeout`。
+
+## Log Replication
+`Raft` 使用 `replicated state machines` 实现容错，每个节点都维护自己的 `log`，只要各节点上按照相同顺序存储相同的命令并执行，就会得到一致的状态。
+![images](/assets/images/raft_rsm.png)
+
+`leader` 接收客户端请求的流程如下:
+1. 将客户端请求写入本地 `log`，发送 `AppendEntries RPC` 给所有 `follwer`；
+2. 若收到 `majority` 的成功响应后，会 `commit` 该 `log`，`apply` 至状态机；
+3. 返回给客户端响应；
+4. 后续的 `RPC` 都会携带 `leader` 的 `commit index`，`follwer` 会提交本地未提交的 `log`。
+
+为了保证集群内每个节点都有相同的 `log`，每个 `entry` 都有相应的 `term` 和 `index`，通过 `term` 和 `index` 唯一标记了一个 `entry`:
+* 如果 `entry` 含有相同的 `term` 和 `index`，则保存着相同的 `command`(`leader` 从不删除 `entry`)。
+* 如果 `entry` 含有相同的 `term` 和 `index`，则之前的 `log entries` 都相同(通过数学归纳法证明)。
+
+现在仔细来看一下 `log replication` 的过程，`leader` 保存了每个 `follwer` 的状态:
+* *next*: 下一条发送的 `entry` 的 `index`(初值为 `leader last log index + 1`)。
+* *match*: 已经复制的最大的 `log index`，用于更新 `commmit index`(初值为 `0`)。
+
+`leader` 发送 `AppendEntries RPC` 时会携带前一条 `entry` 的 `term` 和 `index`，`follwer` 会判断是否一致:
+* 若一致，则表明 `log` 是相同的，可以进行 `append`。若 `follwer` 的 `log` 中有冲突的，会进行 `truncate`；
+* 若不一致，则拒绝该 `RPC`，`leader` 会回退 `next` 重发 `RPC`，直到 `log` 成功匹配。这里有多种减少的策略:
+    * 最简单的，每次拒绝时`next--`，总会对的上，这种策略比较慢，一次只回退一个 `entry`。
+    * `follwer` 返回冲突的 `entry` 的 `term`，和该 `term` 的第一条 `entry` 的 `index`。`leader` 根据自己 `log` 采取不同的措施:
+        * 若 `leader` 有该 `term` 的 `log entries`，回退 `next` 为 `leader` 最后一条该 `term` 的 `entry` 的 `index`；
+        * 没有，则回退 `next` 为 `follwer` 返回的第一条 `entry` 的 `index`。
+* 还有可能 `follwer` 没有该 `index` 的 `entry`，`follower` 告诉 `leader` 自己 `log` 最后一条 `entry` 的 `index`，之后 `leader` 回退 `next` 到该 `index`。
+
+当 `AppendEntries RPC` 成功时，`leader` 会更新 `next`、`match`，并根据 `majority` 的 `match` 更新 `commit index`，应用到状态机。
+
+## Safety
+上面两个子问题仍然有些问题没有解决，需要增加一些限制条件:
+1. 新选举出的 `leader` 必须拥有之前所有已经 `commit` 的 `entries`。
+2. 已经被 `commit` 的 `entry` 不能被覆盖。
+
+### Election restriction
+`candidate` 发送 `RequestVote RPC` 时会携带自己最后一条 `entry` 的 `term` 和 `index`，节点会投票给 `log` 比自己新的 `candidate`，判断条件如下:
+> (candidate.lastTerm > me.lastTerm) \|\|
+> (candidate.lastTerm == me.lastTerm && candidate.lastIndex > me.lastIndex)
+
+这不仅保证了新的 `leader` 拥有所有已经被 `commit` 的 `entries`，而且也是所有 `candidate` 中 `log` 较新的。
+
+### Committing entries from previous terms
+因为上面的 `election restriction` 比较的是 `log` 的新旧，并没有比较 `commit index`，有可能导致已经被 `commit` 的 `entry` 被覆盖:
+![images](/assets/images/raft_commit.png)
+
+看一下上图的情景:
+1. `S1` 是 `leader`;
+2. `S1` 崩溃， `S5` 收到 `S3/S4` 的投票成为 `leader`，并在本地 `log` 新增了 `term` 为 3 的 `entry`;
+3. `S5` 崩溃，`S1` 收到 `S2/S3/S4` 的投票成为 `leader`，并将 `entry2` 复制到 `majority` 并提交;
+4. `S1` 崩溃，`S3` 收到 `S2/S3/S4` 的投票成为 `leader`，并提交 `term` 为 3 的 `entry2`，覆盖了之前提交的 `entry2`。
+
+为了解决这个问题，`Raft` 不会 `commit` 之前 `term` 的 `entry`，只会 `commit` 当前 `term` 的 `entry`，当前 `term` 的 `entry` 被 `commit` 后，之前所有的 `entry` 也
+都被间接 `commit` 了。再来看一下(e)的情形，`S1` 提交了 `term4` 的 `entry`，`entry2` 也被间接提交了，`S5` 就不会再被选举为 `leader`。
