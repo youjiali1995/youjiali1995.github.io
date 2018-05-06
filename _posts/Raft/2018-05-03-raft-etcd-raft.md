@@ -1,0 +1,79 @@
+---
+title: Raft 笔记(三) -- etcd/raft
+excerpt: 介绍 etcd/raft 的基本用法和结构。
+layout: post
+categories: Raft
+---
+
+{% include toc %}
+
+正如 `Raft` 的设计目标，`Raft` 的理论很简单，但是正确又高效的实现没那么容易，需要注意很多 `corner case`。
+目前最出名的实现当属 [etcd/raft](https://github.com/coreos/etcd/tree/master/raft)，它的实现基本按照[Raft-thesis](https://ramcloud.stanford.edu/~ongaro/thesis.pdf)来，
+所以在看代码前最好过一遍。
+
+## etcd/raft
+`etcd/raft` 最大的优点是把整个 `raft` 实现为独立的状态机，以**消息**为输入，然后执行相应的状态转换，再返回需要由用户处理的部分。当使用时，需要用户实现相应的
+`transportation layer` 和 `storage layer`。这种实现有很多好处：
+* 灵活性：定制化选择 `transportation layer` 和 `storage layer`;
+* 性能：`raft` 只实现状态转移，性能由用户使用方式决定；
+* 确定性：方便测试，可以很容易的 `mock` 出网络和磁盘。
+
+### 结构
+`etcd/raft` 为纯粹的状态机模型，所有的事件都以消息的形式处理。它主要有两个结构：
+* `raft`: `raft` 状态机，根据消息触发状态转换；
+* `Node`: 代表了 `raft cluster` 中的一个节点，提供了与 `raft` 状态机交互的接口。
+
+`raft` 结构体维护了当前节点的 `raft` 状态，如 `Term`, `Vote`, `lead` 等，是非线程安全的，提供方法触发状态变化。主要的方法如下：
+* `tick`: 每次调用会增加内部的逻辑时钟，用于触发超时事件如 `leader election` 和 `heartbeat`；
+* `step`: 类型为 `type stepFunc func(r *raft, m pb.Message) error`，用于处理消息；
+* 还有其他方法用于处理成员变更、获取状态等。
+
+`Node` 是与用户交互的入口，是一个接口，具体实现会调用 `raft` 提供的方法，触发状态变化。它提供了如下几种方法：
+* `Tick()`: 用于增加 `raft` 的逻辑时钟；
+* `Propose()`: 用于 `propose` 客户端的请求；
+* `ProposeConfChange()`: 用于处理成员变更的请求；
+* `Ready()`: 返回只读的 `chan`，用于获取 `raft` 的当前状态，由用户进行相应处理；
+* `Advance()`: 通知 `Node` 之前从 `Ready()` 返回的状态已被处理完，可以进行一下轮处理。
+
+目前 `etcd/raft` 中有两种实现，后面的 `node` 都指线程安全的:
+1. `node.go`: 线程安全的 `Node`，通过 `chan` 将整个流程串行化，用户可以在任何情况下调用该 `Node` 的方法，也是后面主要介绍和 `etcd` 使用的；
+2. `rawnode.go`: 非线程安全的 `Node`，直接调用 `raft` 的方法，用于实现 `multi-raft`。
+
+`node` 所有事件都通过 `chan` 发送，在创建 `node` 后，会启动一个 `goroutine`，内部为无线循环 `select` 处理 `chan` 的消息，这样所有涉及到 `raft` 状态机的操作都变为串行的，
+实现了线程安全。
+
+### 分层
+上面提到，需要由用户处理 `storage` 和 `transportation`。`etcd/raft` 对这两层的解耦方式不太相同，因为 `storage` 和 `raft` 联系紧密，所以 `etcd/raft` 提供了
+`Storage` 接口，由用户实现，然后在启动时设置到 `Config` 中。而 `transportation` 并没有在 `etcd/raft` 中处理，而是全权交给用户处理。通过 `Ready` 结构体返回已就绪的需要由用户处理的信息，
+配合 `Ready()` 和 `Advance()` 方法使用。
+
+### 使用
+基本使用方法在 `README` 里有，并且还有一个例子可以参考：[raftexample](https://github.com/coreos/etcd/tree/master/contrib/raftexample)。最主要的结构就是一个状态机循环：
+```go
+  for {
+    select {
+    case <-s.Ticker:
+      n.Tick() // 增加逻辑时钟
+    case rd := <-s.Node.Ready(): // 处理 Ready 结构体
+      saveToStorage(rd.HardState, rd.Entries, rd.Snapshot) // 持久化
+      send(rd.Messages) // 发送消息给其他节点
+      if !raft.IsEmptySnap(rd.Snapshot) {
+        processSnapshot(rd.Snapshot)
+      }
+      for _, entry := range rd.CommittedEntries { // 处理 commited entries
+        process(entry)
+        if entry.Type == raftpb.EntryConfChange {
+          var cc raftpb.ConfChange
+          cc.Unmarshal(entry.Data)
+          s.Node.ApplyConfChange(cc)
+        }
+      }
+      s.Node.Advance() // 通知 raft 当前状态已处理完，可以处理下一轮状态
+    case <-s.done:
+      return
+    }
+  }
+```
+
+### 测试
+测试一直是分布式系统的难点和重点，`etcd/raft` 的实现为纯粹的状态机，可以轻易的 `mock` 出网络故障或磁盘故障，从而确保实现的正确性。

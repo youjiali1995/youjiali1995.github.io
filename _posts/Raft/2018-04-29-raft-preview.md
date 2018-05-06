@@ -9,7 +9,7 @@ categories: Raft
 
 ## 资料
 主要的参考资料是2篇论文:
-* [raft-extended](https://raft.github.io/raft.pdf)
-* [raft-thesis](https://ramcloud.stanford.edu/~ongaro/thesis.pdf)
+* [In Search of an Understandable Consensus Algorithm](https://raft.github.io/raft.pdf)
+* [consensus: bridging theory and practice](https://ramcloud.stanford.edu/~ongaro/thesis.pdf)
 
 同时会看 [etcd/raft](https://github.com/coreos/etcd/tree/master/raft) 是如何实现和优化的。

@@ -352,7 +352,7 @@ void feedReplicationBacklog(void *ptr, size_t len) {
 在`serverCron()`中每秒调用一次`replicationCron()`处理建立连接和一些周期性任务:
 * 超时: 连接超时、`rdb`传输超时、`master` `ping`超时
 * `server.repl_state == REPL_STATE_CONNECT`时，建立连接。连接使用非阻塞`connect`，并注册可读可写文件事件`syncWithMaster()`，设置`server.repl_state = REPL_STATE_CONNECTING`
-* `slave`发送`REPLCONF ACK`。`master`用于更新`slave->repl_ack_off`，用在`Wait`命令中，实现同步复制
+* `slave`发送`REPLCONF ACK`。`master`用于更新`slave->repl_ack_off`，用在`Wait`命令中，实现同步复制，同时更新`slave->repl_ack_time`用于超时
 * `master`定期(`repl-ping-slave-period`)发送`ping`，`slave`可以根据`server.master.lastinteraction`判断`master`超时
 * 处理超时`slave`
 * 根据`repl-backlog-ttl`，释放`repl_back`
