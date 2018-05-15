@@ -457,6 +457,8 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 ![image](/assets/images/raft_append_log_parallel.png)
 * 当然把 `log` 应用到状态机和发送给客户端响应也可以在另一个线程来执行，与 `Raft` 的操作并行。
 
+虽然 `client` 的一次 `request` 仍要走完上述所有流程，但对多个 `clients` 而言，并发和吞吐量上升了。
+
 ## Persistence
 除了 `log` 和 `snapshot`，`Raft` 还有一些状态需要持久化，在节点重启时恢复：
 * `currentTerm`: `term` 要保持递增，否则 `log` 会有冲突。
