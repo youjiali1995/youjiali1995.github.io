@@ -129,7 +129,7 @@ func (r *raft) resetRandomizedElectionTimeout() {
 ```
 * 每个节点在每个 `term` 只会给一个节点投票，只有在 `term` 发生变化的时候清零；
 * `leader` 发送 `heartbeat` 时，其余节点只会 `check` 消息的 `term`，而不会比较 `log`，这是因为每个 `term` 只会有一个有效 `leader`;
-* 当选举成功后，新 `leader` 会立即发送一个空的 `MsgApp` 给其他节点，这是为了及时更新 `commit index`，保证 `linearizablity`(在与客户端交互的时候再详细介绍)；
+* 当选举成功后，新 `leader` 会立即发送一个空的 `MsgApp` 给其他节点，这是为了及时更新 `committed index`，保证 `linearizablity`(在与客户端交互的时候再详细介绍)；
 * 当 `leader` 收到 `heartbeat` 响应后会立即发送滞后的 `log entries` 给对端，此时可以认为对端是就绪的：
 ```go
 if pr.Match < r.raftLog.lastIndex() {
