@@ -464,9 +464,9 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 * `currentTerm`: `term` 要保持递增，否则 `log` 会有冲突。
 * `votedFor`: 防止重启时给多个节点投票。
 
-`committed index` 和 `apply` 可以不持久化，启动时设置为 0，接收到其他节点消息时进行 `log` 回放更新。
+`committed index` 和 `apply` 可以不持久化，启动时设置为 0，接收到其他节点消息时更新 `committed index`，`log` 回放时更新 `apply`。
 
-`etcd/raft` 中会持久化如下信息，`committed index` 也会恢复，可以在不接收到其他节点消息时就进行 `log` 回放：
+`etcd/raft` 中会持久化如下信息:
 ```go
 type HardState struct {
 	Term             uint64 `protobuf:"varint,1,opt,name=term" json:"term"`
@@ -476,7 +476,8 @@ type HardState struct {
 }
 ```
 
-在重启节点前，用户需要恢复 `storage`，`raft` 会根据 `storage` 恢复状态:
+`committed index` 也会恢复，可以在不接收到其他节点消息时就进行 `log` 回放，要注意避免重复应用 `log`，可以通过 `Config.Applied` 恢复 `apply`，
+不过 `Ready` 中只会返回存在的 `log`，若 `snapshot` 对应的 `log` 已被删除，也不会重复应用。在重启节点前，用户需要恢复 `storage`，`raft` 会根据 `storage` 恢复状态，
 ```go
 storage := raft.NewMemoryStorage()
 
