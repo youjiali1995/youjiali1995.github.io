@@ -202,7 +202,7 @@ r.forEachProgress(func(id uint64, pr *Progress) {
 * 为了提交之前 `term` 的 `log entries`： `Raft` 只会提交当前 `term` 的 `log`，若之后一直没新请求，则之前 `term` 未提交的 `log` 一直不会提交。
 * 更新 `leader` 的 `committed index`： `Raft` 按照 `log` 新旧来选举，而不是 `committed index`，所以新选举出的 `leader` 的 `committed index` 可能会落后，影响一致性。
 
-`leader` 在 `msgApp` 中设置上一条 `entry` 的 `term` 和 `index` 用于 `follower` 匹配，当发生冲突时，`follower` 返回的 `MsgAppResp` 会携带冲突的 `index` 和自己的 `last index`:
+`leader` 在 `msgApp` 中设置上一条 `entry` 的 `term` 和 `index` 用于 `follower` 匹配，当发生冲突时，`follower` 返回的 `MsgAppResp` 会携带冲突的 `index` 和自己的 `last index`(跳过不存在的 `log`):
 ```go
 r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: m.Index, Reject: true, RejectHint: r.raftLog.lastIndex()})
 ```
@@ -461,12 +461,12 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 
 ## Persistence
 除了 `log` 和 `snapshot`，`Raft` 还有一些状态需要持久化，在节点重启时恢复：
-* `currentTerm`: `term` 要保持递增，否则 `log` 会有冲突。
-* `votedFor`: 防止重启时给多个节点投票。
+* `currentTerm`: `term` 要保持递增，否则 `log` 会有冲突；
+* `votedFor`: 配合 `currentTerm` 防止重启时给多个节点投票。
 
 `committed index` 和 `apply` 可以不持久化，启动时设置为 0，接收到其他节点消息时更新 `committed index`，`log` 回放时更新 `apply`。
 
-`etcd/raft` 中会持久化如下信息:
+`etcd/raft` 返回的 `Ready` 结构体包含3部分需要持久化: `Entries`、`HardState` 和 `Snapshot`。在把 `HardState` 写入持久存储之后才可以发送 `message`，否则有可能在同一 `term` 给多个节点投票。
 ```go
 type HardState struct {
 	Term             uint64 `protobuf:"varint,1,opt,name=term" json:"term"`
@@ -477,7 +477,22 @@ type HardState struct {
 ```
 
 `committed index` 也会恢复，可以在不接收到其他节点消息时就进行 `log` 回放，要注意避免重复应用 `log`，可以通过 `Config.Applied` 恢复 `apply`，
-不过 `Ready` 中只会返回存在的 `log`，若 `snapshot` 对应的 `log` 已被删除，也不会重复应用。在重启节点前，用户需要恢复 `storage`，`raft` 会根据 `storage` 恢复状态，
+不过 `Ready` 中只会返回存在的 `log`，若 `snapshot` 对应的 `log` 已被删除，也不会重复应用。
+
+`etcd/raft` 建议按照 `Entries`、`HardState`、`Snapshot` 的顺序持久化，否则有可能重启节点失败。因为 `etcd/raft` 要求 `committed index` 在 `[snapshot_last_index, log_last_index]` 范围内，若
+持久化 `HardState` 后，节点崩溃，有可能造成 `committed index` 不在范围内，需要修复才能启动:
+```go
+func (r *raft) loadState(state pb.HardState) {
+	if state.Commit < r.raftLog.committed || state.Commit > r.raftLog.lastIndex() {
+		r.logger.Panicf("%x state.commit %d is out of range [%d, %d]", r.id, state.Commit, r.raftLog.committed, r.raftLog.lastIndex())
+	}
+	r.raftLog.committed = state.Commit
+	r.Term = state.Term
+	r.Vote = state.Vote
+}
+```
+
+在重启节点前，用户需要恢复 `storage`，`raft` 会根据 `storage` 恢复状态，包含状态机状态、`log`、`Hardstate`、集群信息等:
 ```go
 storage := raft.NewMemoryStorage()
 
@@ -498,16 +513,6 @@ c := &Config{
 // Restart raft without peer information.
 // Peer information is already included in the storage.
 n := raft.RestartNode(c)
-```
-
-不需要传集群信息，会在 `snapshot` 中保存:
-```go
-type SnapshotMetadata struct {
-	ConfState        ConfState `protobuf:"bytes,1,opt,name=conf_state,json=confState" json:"conf_state"`
-	Index            uint64    `protobuf:"varint,2,opt,name=index" json:"index"`
-	Term             uint64    `protobuf:"varint,3,opt,name=term" json:"term"`
-	XXX_unrecognized []byte    `json:"-"`
-}
 ```
 
 ## 疑问
