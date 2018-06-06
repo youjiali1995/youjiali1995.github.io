@@ -334,8 +334,10 @@ func stepLeader(r *raft, m pb.Message) error {
 }
 ```
 
-`snapshot` 发送的代价较大，应避免频繁发送 `snapshot`，`Progress` 限制了每次只有 1 个正在发送的 `snapshot`，只有当发送成功或调用 `Node.ReportSnapshot()` 发送失败后，
-变为 `Probe` 状态，才有可能发送下一个 `snapshot`。
+`snapshot` 发送的代价较大:
+* 应避免频繁发送 `snapshot`，`Progress` 限制了每次只有 1 个正在发送的 `snapshot`，只有当发送成功或调用 `Node.ReportSnapshot()` 发送失败后，
+    变为 `Probe` 状态，才有可能发送下一个 `snapshot`；
+* `etcd/raft` 中 `snapshot` 放在单条 `msg` 中，一般 `RPC` 都对消息大小有限制，可以分为多个 `RPC` 并带上 `offset`，或者拆分为多个 `chunk` 来发送。
 
 ### 流控
 `Progress` 还有流控的功能：限制发送给 `Replication` 状态节点消息的数量，而 `Config.MaxSizePerMsg` 限制了每条消息的大小。流控是必要的，如果发生网络分区，`leader` 可能会累积很多消息，
