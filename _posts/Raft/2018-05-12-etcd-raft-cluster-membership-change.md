@@ -36,6 +36,7 @@ categories: Raft
 
 ### etcd/raft 实现
 调用 `Node.ProposeConfChange()` 来发起成员变更，因为也需要通过 `log replication` 来提交，所以复用了 `pb.Entry`，需要进行 `marshal`:
+{% raw %}
 ```go
 func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
 	data, err := cc.Marshal()
@@ -45,6 +46,7 @@ func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
 	return n.Step(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Type: pb.EntryConfChange, Data: data}}})
 }
 ```
+{% endraw %}
 
 `pb.ConfChange` 结构如下：
 * `Type`: 成员变更操作类型，包括增加节点、删除节点等；

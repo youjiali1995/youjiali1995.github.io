@@ -80,11 +80,13 @@ func stepFollower(r *raft, m pb.Message) error {
 
 #### etcd/raft 实现
 当接收到读请求时，调用 `Node.ReadIndex()`，`rctx` 标记了一个读请求，相当于 `request id`，要保证全局唯一:
+{% raw %}
 ```go
 func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
 	return n.step(ctx, pb.Message{Type: pb.MsgReadIndex, Entries: []pb.Entry{{Data: rctx}}})
 }
 ```
+{% endraw %}
 
 在 `raft.StepLeader()` 中处理 `MsgReadIndex`：
 * 检查在当前 `term` 是否 `commit` 过 `log entry`：
