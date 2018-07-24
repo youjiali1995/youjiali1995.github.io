@@ -12,4 +12,5 @@ categories: Storage
 
 ## 参考资料
 * [doc](https://github.com/google/leveldb/tree/v1.20/doc) 配合源码里的注释已经足够了。
-* 网上的博客看到的最好的是 [CatKang](https://github.com/CatKang) 的 [庖丁解Leveldb](http://catkang.github.io/2017/01/07/leveldb-summary.html) 系列，写的很好，既详细又不拖泥带水。
+* 网上的博客看到的最好的是 [CatKang](https://github.com/CatKang) 的 [庖丁解Leveldb](http://catkang.github.io/2017/01/07/leveldb-summary.html) 系列，主要讲了设计，因为
+我能力不够，所以仍会关注具体实现。
