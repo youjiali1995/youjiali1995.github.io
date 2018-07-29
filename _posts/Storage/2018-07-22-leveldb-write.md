@@ -97,8 +97,10 @@ char* EncodeVarint32(char* dst, uint32_t v) {
 * `Sequence` 降序。
 * `ValueType` 降序：每个写操作都有不同的 `sequence`，所以 `ValueType` 用不到。
 
+查找的时候会根据传入的 `snapshot` 或者最新的 `sequence` 构造出 `InternalKey` 查询，只要查找到第一个大于等于自己的即可。
+
 `leveldb` 中 `skiplist node` 结构如下所示，只有 `key` 用于存储数据，所以 `memtable` 会构造如上所示的 `Add/Delete` 结构插入到 `skiplist` 中，通过 `InternalKey` 即可比较出大小，
-后面追加的 `value` 不会影响先后顺序：
+后面追加的 `value` 不会影响先后顺序。
 ```cpp
 template<typename Key, class Comparator>
 struct SkipList<Key,Comparator>::Node {
@@ -235,32 +237,6 @@ struct SkipList<Key,Comparator>::Node {
 
 `leveldb` 的 `skiplist` 的结构没什么特别的，查找和插入算法和不支持并发的区别也不大:
 * 查找：从最高层开始向右、向下查找。
-* 插入：查找算法会保存查找过程中每层中向下的结点，也就是被插入节点每层的 `prev` 结点，最后将被插入结点插入在 `prev[]` 后。
-
-插入的实现如下:
-```cpp
-template<typename Key, class Comparator>
-void SkipList<Key,Comparator>::Insert(const Key& key) {
-  Node* prev[kMaxHeight];
-  Node* x = FindGreaterOrEqual(key, prev);
-
-  int height = RandomHeight();
-  if (height > GetMaxHeight()) {
-    for (int i = GetMaxHeight(); i < height; i++) {
-      prev[i] = head_;
-    }
-    max_height_.NoBarrier_Store(reinterpret_cast<void*>(height));
-  }
-
-  x = NewNode(key, height);
-  for (int i = 0; i < height; i++) {
-    x->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
-    prev[i]->SetNext(i, x); // write-release
-  }
-}
-```
-
-查找的实现如下:
 ```cpp
 template<typename Key, class Comparator>
 typename SkipList<Key,Comparator>::Node* SkipList<Key,Comparator>::FindGreaterOrEqual(const Key& key, Node** prev)
@@ -279,6 +255,28 @@ typename SkipList<Key,Comparator>::Node* SkipList<Key,Comparator>::FindGreaterOr
         level--;
       }
     }
+  }
+}
+```
+* 插入：查找算法会保存查找过程中每层中向下的结点，也就是被插入节点每层的 `prev` 结点，最后将被插入结点插入在 `prev[]` 后。
+```cpp
+template<typename Key, class Comparator>
+void SkipList<Key,Comparator>::Insert(const Key& key) {
+  Node* prev[kMaxHeight];
+  Node* x = FindGreaterOrEqual(key, prev);
+
+  int height = RandomHeight();
+  if (height > GetMaxHeight()) {
+    for (int i = GetMaxHeight(); i < height; i++) {
+      prev[i] = head_;
+    }
+    max_height_.NoBarrier_Store(reinterpret_cast<void*>(height));
+  }
+
+  x = NewNode(key, height);
+  for (int i = 0; i < height; i++) {
+    x->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
+    prev[i]->SetNext(i, x); // write-release
   }
 }
 ```
