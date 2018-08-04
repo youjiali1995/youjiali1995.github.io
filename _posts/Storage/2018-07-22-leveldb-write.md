@@ -44,7 +44,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
 ### varint
 `leveldb` 中对 `int` 编码有2种格式:
 * `fixedint`: 固定字节数的 `little-endian` 编码。
-* `varint`: 变长字节数的 `int` 编码，目的是为了节省空间，把每个字节的最高位作为进位标志，只有最坏的情况下会比 `fixed` 编码多一字节:
+* `varint`: 变长字节数的 `int` 编码，目的是为了节省空间，把每个字节的最高位作为进位标志。因为编码后的每个字节只用到了 `7` 位，所以在最坏的情况下会比定长编码用的空间多，
+`int32` 最多用到 `5` 字节，`int64` 最多用到 `10` 字节：
 ```cpp
 char* EncodeVarint32(char* dst, uint32_t v) {
     // Operate on characters as unsigneds
