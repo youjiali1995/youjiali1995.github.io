@@ -39,7 +39,7 @@ categories: Storage
 
 ### Block
 `Block` 保存 `key/value` 对，并会进行压缩和校验(`checksum`)，格式如下：
-![image](/assets/images/leveldb/Block.png)
+![image](/assets/images/leveldb/block.png)
 
 `Block` 中第一个 `key` 是完整的，按顺序解析时，通过拼接和前一个 `key` 重叠的加上 `Delta` 部分即可得到当前完整的 `key`。按顺序存放的 `key` 之间很可能会有重叠，
 尤其是 `leveldb` 中很多 `key` 只有 `sequence` 不同，使用这种存储方式能够极大的降低数据存储量。因为 `Block` 的大小可能很大，
