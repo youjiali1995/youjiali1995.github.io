@@ -109,12 +109,72 @@ categories: Storage
 * `Index Block Handle`：同上。
 * `Magic Number`：用于判断检测文件有效性。
 
-## memtable compaction
+## Compaction
+之前提到过 `leveldb` 是分层管理 `sstable` 的，`level-0` 的 `sstable` 之间有重叠，其他 `level` 的 `sstable` 之间无重叠。读是从 `level-0` 开始从低往高查找，
+当查找到第一个 `key` 相同且 `sequence` 小于等于 `target key` 的就会停止，需要保证一个 `key` 的高版本(`sequence` 大)所在的 `sstable` 层高一定要小于等于低版本的层高，
+这样才能保证查找到的 `key` 是最新的。
+
+`compaction` 分为两种：
+* `memtable compaction`：`memtable` 直接转储为 `sstable`。
+* `sstable compaction`：将 `level-n` 的一个 `sstable` 和 `level-(n+1)` 重叠的 `sstable` 合并生成新的 `level-(n+1)` 的 `sstable`。
+
+因为 `level-0` 的 `sstable` 间有重叠，为了保证上面的结构，会把 `level-0` 中所有重叠的 `sstable` 和 `level-1` 中重叠的 `sstable` 合并生成新的 `level-1` 的 `sstable`。
+将 `level-0` 所有重叠 `sstable` 合并保证了更新的 `key` 一定在更低层；低层和高层的重叠 `sstable` 合并保证了高层的 `sstable` 之间无重叠。
+
+`sstable` 由 `file number` 区分，`file number` 顺序递增，越大文件越新，查找 `level-0` 时就会按照新旧程度排序，先查找新的 `sstable`。还会记录每个 `sstable` 的 `key range`，
+只要查找相匹配的即可。
+
+### Memtable Compaction
 当 `memtable` 大小超过 `Options.write_buffer_size` 时(默认 4MB)，会在下一次写操作时将当前的 `memtable` 转为 `immutable memtable`，创建新的 `memtable`，并触发
-`immutable memtable` 的 `compaction`。`compaction` 由单独的线程来执行。
+`immutable memtable` 的 `compaction`。`compaction` 会由单独的线程来执行。
 
-## sstable compaction
+`memtable compaction` 的过程很简单，顺序遍历 `memtable` 将所有的 `key/value` 转储为 `sstable` 格式即可，生成的 `sstable` 不一定在 `level-0`，只要满足上面的保证即可。
+要注意的是，`leveldb` 为了防止 `level-0` 的 `sstable` 数量太多会延缓写操作：
+* 当 `sstable` 数量达到 `kL0_SlowdownWritesTrigger(8)` 时，每个写操作会 `sleep(1ms)`。
+* 当 `memtable` 需要 `compaction` 但之前的 `immutable memtable compaction` 还未完成时，会等待之前的完成。
+* 当 `sstable` 数量达到 `kL0_StopWritesTrigger(12)` 时，会等待之前的 `compaction` 完成。
 
-## Version
-1. snapshot 链表
-2. 主要是为了 iter 的有效性。snapshot 是 compaction ？
+### Sstable Compaction
+触发 `sstable compaction` 的条件如下：
+* `level-0`：`sstable` 文件个数超过 `kL0_CompactionTrigger(4)`。因为 `level-0` 是从 `sstable` 直接转储而来，所以用个数限制而不是大小。
+* 其他 `level`：高层的 `sstable` 会按照 `max_file_size(2MB)` 进行切割，当一层的 `sstable` 总大小超过阈值时会触发。
+* 每个文件还有 `seek` 的次数限制，超过次数会进行 `compaction`，防止读多写少的场景下，`compaction` 不会触发。
+
+挑选参与 `compaction` 的文件分2步：
+1. 执行 `compaction` 的 `level`：`leveldb` 会记录每个 `level` 上次 `compaction` 的最大的 `key`，下一次时会挑选在这之后的文件，防止后面的文件一直不会被选到。
+2. 高一层的文件：挑选和低一层的文件有重叠的所有文件。高一层的总的 `key range` 可能会覆盖到更多的低一层的文件，所以会进行 `expand`，同时为了防止 `compaction` 太大，
+会有一定的限制。
+
+`sstable compaction` 的过程也比较简单，和 `memtable compaction` 的区别在于，这里是多个文件，类似 `merge sort` 的流程，`leveldb` 中也实现了 `MergingIterator` 用于
+在多个迭代器的情况下有序迭代。需要关注的是无用数据的清理，每个 `key` 会有多个版本，再也不会访问到的版本不需要保留。`leveldb` 支持 `snapshot`，也就是 `sequence`，在其内部维护了一个 `SnapshotList`，
+保存着所有正在使用的 `snapshot`，会根据当前使用到的 `smallest snapshot` 进行清理(若没有则是 `last sequence`)：
+* 只需要保存第一个小于等于 `smallest snapshot` 的版本即可。
+* 若第一个满足要求的版本是删除操作，只要高层没有这个 `key` 也可以丢弃这个版本。
+
+高层的 `sstable` 会进行切割，除了大小限制 `max_file_size(2MB)` 外，还会防止该文件与更高一层的 `sstable` 重叠太多，会导致该文件的 `compaction` 消耗很大。
+
+## Manifest
+除了 `sstable` 文件，还有一些 `metadata` 需要保存，如当前的 `sequence`、`file number` 和 `sstable` 的组织结构等，`manifest` 文件就用来保存这些数据。`leveldb` 不是
+每次 `metadata` 发生变化就修改 `manifest`，而是当 `compaction` 完成时，写入一条 `VersionEdit` 数据，因为大部分 `metadata` 只有 `compaction` 完成才会变化。
+`VersionEdit` 结构如下：
+```cpp
+class VersionEdit {
+  typedef std::set< std::pair<int, uint64_t> > DeletedFileSet;
+
+  std::string comparator_; // 用于检测文件是否和 db 的 comparator 匹配
+  uint64_t log_number_; // 当前 memtable 的 log file number
+  uint64_t prev_log_number_; // 之前的 memtable 的 log file number
+  uint64_t next_file_number_; // 最新的 file number
+  SequenceNumber last_sequence_; // 最新的 sequence
+  std::vector< std::pair<int, InternalKey> > compact_pointers_; // 每层下一次 compaction 的位置
+  DeletedFileSet deleted_files_; // 删除的文件
+  std::vector< std::pair<int, FileMetaData> > new_files_; // 新增的文件
+};
+```
+
+`manifest` 结构和 `memtable log` 相同，`VersionEdit` 的编码也很简单，通过前缀 `type` 区分数据类别，就不再赘述了。
+`VersionEdit` 中大多是增量数据，顺序累积回放 `mainifest` 即可得到完整的最新的 `metadata`。这种记录方式使得 `manifest` 也都是顺序写，同时减少了
+需要记录的数据量。
+
+`manifest` 中除了记录当前 `memtable` 对应的 `log file` 还需要记录 `immutable memtable` 的 `log file`，只有当 `immutable memtable compaction` 时
+才可以删除对应的 `log file`。`manifest` 中记录的 `sequence` 并不是最新的，重启 `db` 时会根据 `log file` 恢复到最新。

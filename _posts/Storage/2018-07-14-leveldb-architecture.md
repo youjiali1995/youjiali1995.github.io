@@ -42,7 +42,7 @@ categories: Storage
 * 当 `memtable` 大小超过阈值时(默认为 `4MB`)，变为 `immutable memtable`，在后台线程 `compaction` 为 `level-0` 的 `sstable`。
 * `sstable` 的大小固定，默认为 `2MB`。
 * 共分为 `7` 层:
-    * `level-0` 由 `memtable` 直接转化而来，文件之间有重叠。当 `level-0` 的 `sstable` 数量到达阈值时，会将 `level-0` 的所有 `sstable` 和 `level-1` 中有重叠的 `sstable` 合并为新的 `level-1` 的 `sstable`。
+    * `level-0` 由 `memtable` 直接转化而来，文件之间有重叠。当 `level-0` 的 `sstable` 数量到达阈值时，会将 `level-0` 的部分 `sstable` 和 `level-1` 中有重叠的 `sstable` 合并为新的 `level-1` 的 `sstable`。
     * 其余 `level` 由低层 `compaction` 而来，每层有大小限制，`level-(N+1)` 的大小限制是 `level-N` 的 `10` 倍，其中`level-1` 为 `10MB`。相同 `level` 的文件之间无重叠。当 `level-N` 的
  `sstable` 大小到达阈值时，会挑选一个文件(其实不止一个)和 `level-(N+1)` 中有重叠的 `sstable` 合并为新的 `level-(N+1)` 的 `sstable`。
 * 读的顺序如下，只要读到对应的 `key` 就会停止:
