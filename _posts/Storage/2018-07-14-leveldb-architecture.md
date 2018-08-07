@@ -28,23 +28,22 @@ categories: Storage
 * 读放大: 减少读数据时，读取的无关数据量。
 * 随机 `I/O`: 尽量减少随机 `I/O`。
 
-考虑最基本的情况，磁盘上维护一个大的 `sstable`，当 `memtable` 大小超过阈值时，与磁盘上的 `sstable` 合并，每次合并可能要将整个 `sstable` 进行重写，会带来
+考虑最基本的情况，磁盘上维护一个大的 `sstable`，当 `memtable` 大小超过阈值时，就与磁盘上的 `sstable` 合并，每次合并可能要将整个 `sstable` 进行重写，会带来
 极大的写放大，读取时也会有大量随机 `I/O`。现在一步步进行优化:
-1. 既然不能每次 `memtable` 刷新为 `sstable` 就进行合并，可以维护多个独立的 `sstable`，但是读的话就会一个一个读 `sstable`，无用数据很多，读放大也很大，所以要限制 `sstable` 的数量。
-2. 当 `sstable` 数量到达阈值时 `compaction` 为一个大的 `sstable`，但这又回到了最初的那种情况，独立的 `sstable` 会和大的 `sstable` 进行合并。
-3. 为了降低写放大，将大的 `sstable` 划分为多个小的、不重叠的 `sstable`，这样 `sstable` 就分为2层：`level-0` 是 `memtable` 直接转换而来，文件之间有重叠；`level-1` 由
+1. 不是每次 `memtable` 大小超过阈值就与 `sstable` 合并，而是将 `memtable` 转储为 `sstable`，当到了一定数量后批量合并，从而减少合并的次数。同时需要控制 `sstable` 的数量，因为读可能需要读每个 `sstable`，数量太多会降低读的性能。
+2. 但每次合并仍有可能将整个 `sstable` 重写，为了降低写放大，将大的 `sstable` 划分为多个小的、不重叠的 `sstable`，这样 `sstable` 就分为2层：`level-0` 是 `memtable` 直接转换而来，文件之间有重叠；`level-1` 由
 `level-0` 合并而来，文件之间无重叠。当 `level-0` 的文件个数达到上限时，只要挑选 `level-1` 中和 `level-0` 文件有重叠的合并即可，读 `level-1` 也只要读一个文件。
 但仍有可能 `level-1` 中所有的 `sstable` 都需要合并，所以又要限制 `level-1` 的大小。
-4. 当 `level-1` 的 `sstable` 达到上限时，使用同样的方法 `compaction` 为 `level-2` 的 `sstable`。`level-2` 达到上限，再 `compaction` 为 `level-3`……
+3. 当 `level-1` 的 `sstable` 达到上限时，使用类似的方法 `compaction` 为 `level-2` 的 `sstable`。`level-2` 达到上限，再 `compaction` 为 `level-3`……
 
 `leveldb` 就是类似上面的思路分层管理 `sstable`，所以叫 `leveldb`。现在看一下它的实现：
 * `memtable` 由 `skiplist` 实现，只有追加操作，每个操作先顺序写到 `log` 中。
 * 当 `memtable` 大小超过阈值时(默认为 `4MB`)，变为 `immutable memtable`，在后台线程 `compaction` 为 `level-0` 的 `sstable`。
 * `sstable` 的大小固定，默认为 `2MB`。
 * 共分为 `7` 层:
-    * `level-0` 由 `memtable` 直接转化而来，文件之间有重叠。当 `level-0` 的 `sstable` 数量到达阈值时，会将 `level-0` 的部分 `sstable` 和 `level-1` 中有重叠的 `sstable` 合并为新的 `level-1` 的 `sstable`。
-    * 其余 `level` 由低层 `compaction` 而来，每层有大小限制，`level-(N+1)` 的大小限制是 `level-N` 的 `10` 倍，其中`level-1` 为 `10MB`。相同 `level` 的文件之间无重叠。当 `level-N` 的
- `sstable` 大小到达阈值时，会挑选一个文件(其实不止一个)和 `level-(N+1)` 中有重叠的 `sstable` 合并为新的 `level-(N+1)` 的 `sstable`。
+    * `level-0` 由 `memtable` 直接转化而来，文件之间有重叠。当 `level-0` 的 `sstable` 数量到达阈值时，会将 `level-0` 中相互重叠的 `sstable` 和 `level-1` 中重叠的 `sstable` 合并为新的 `level-1` 的 `sstable`。
+    * 其余 `level` 由低层 `compaction` 而来，除最高层外，每层有大小限制，`level-(N+1)` 的大小限制是 `level-N` 的 `10` 倍，其中`level-1` 为 `10MB`。相同 `level` 的文件之间无重叠。当 `level-N` 的
+ `sstable` 大小到达阈值时，会挑选一个文件(可能不止一个)和 `level-(N+1)` 中有重叠的 `sstable` 合并为新的 `level-(N+1)` 的 `sstable`。
 * 读的顺序如下，只要读到对应的 `key` 就会停止:
     1. `memtable`
     2. `immutable memtable`

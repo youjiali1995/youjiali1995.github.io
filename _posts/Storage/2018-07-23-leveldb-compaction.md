@@ -119,7 +119,7 @@ categories: Storage
 * `sstable compaction`：将 `level-n` 的一个 `sstable` 和 `level-(n+1)` 重叠的 `sstable` 合并生成新的 `level-(n+1)` 的 `sstable`。
 
 因为 `level-0` 的 `sstable` 间有重叠，为了保证上面的结构，会把 `level-0` 中所有重叠的 `sstable` 和 `level-1` 中重叠的 `sstable` 合并生成新的 `level-1` 的 `sstable`。
-将 `level-0` 所有重叠 `sstable` 合并保证了更新的 `key` 一定在更低层；低层和高层的重叠 `sstable` 合并保证了高层的 `sstable` 之间无重叠。
+将 `level-0` 所有重叠 `sstable` 合并保证了旧的 `key` 不会在更低层；低层和高层的重叠 `sstable` 合并保证了高层的 `sstable` 之间无重叠。
 
 `sstable` 由 `file number` 区分，`file number` 顺序递增，越大文件越新，查找 `level-0` 时就会按照新旧程度排序，先查找新的 `sstable`。还会记录每个 `sstable` 的 `key range`，
 只要查找相匹配的即可。
@@ -137,7 +137,7 @@ categories: Storage
 ### Sstable Compaction
 触发 `sstable compaction` 的条件如下：
 * `level-0`：`sstable` 文件个数超过 `kL0_CompactionTrigger(4)`。因为 `level-0` 是从 `sstable` 直接转储而来，所以用个数限制而不是大小。
-* 其他 `level`：高层的 `sstable` 会按照 `max_file_size(2MB)` 进行切割，当一层的 `sstable` 总大小超过阈值时会触发。
+* 其他 `level`：高层的 `sstable` 会按照 `max_file_size(2MB)` 进行切割，当一层的 `sstable` 总大小超过阈值时会触发，最高层无大小限制。
 * 每个文件还有 `seek` 的次数限制，超过次数会进行 `compaction`，防止读多写少的场景下，`compaction` 不会触发。
 
 挑选参与 `compaction` 的文件分2步：
@@ -151,7 +151,8 @@ categories: Storage
 * 只需要保存第一个小于等于 `smallest snapshot` 的版本即可。
 * 若第一个满足要求的版本是删除操作，只要高层没有这个 `key` 也可以丢弃这个版本。
 
-高层的 `sstable` 会进行切割，除了大小限制 `max_file_size(2MB)` 外，还会防止该文件与更高一层的 `sstable` 重叠太多，会导致该文件的 `compaction` 消耗很大。
+高层的 `sstable` 会进行切割，除了大小限制 `max_file_size(2MB)` 外，还会防止该文件与更高一层的 `sstable` 重叠太多，会导致该文件的 `compaction` 消耗很大。同时在 `sstable compaction` 
+的过程中若发现存在 `immutable memtable`，会进行 `memtable compaction`，防止阻塞写操作。
 
 ## Manifest
 除了 `sstable` 文件，还有一些 `metadata` 需要保存，如当前的 `sequence`、`file number` 和 `sstable` 的组织结构等，`manifest` 文件就用来保存这些数据。`leveldb` 不是
@@ -178,3 +179,12 @@ class VersionEdit {
 
 `manifest` 中除了记录当前 `memtable` 对应的 `log file` 还需要记录 `immutable memtable` 的 `log file`，只有当 `immutable memtable compaction` 时
 才可以删除对应的 `log file`。`manifest` 中记录的 `sequence` 并不是最新的，重启 `db` 时会根据 `log file` 恢复到最新。
+
+`manifest` 在 `db` 打开时一直追加，不会进行清理，只有下一次打开时才会清理。若不幸 `manifest` 文件有所损坏或者被删除了，`leveldb` 也提供了修复的方式，所有的 `metadata` 除了 `sstable` 的组织结构外，都可以
+通过 `sstable` 和 `log` 文件恢复，同时会将 `log` 转换为 `sstable` 并认为所有的 `sstable` 都处于 `level-0`，然后将修复后的 `metadata` 写入 `manifest`。会在打开 `db` 时立刻触发一次 `compaction`，因为
+所有文件都在 `level-0` 所以 `compaction` 耗时会很久。
+
+## Write Error
+值得一提的是若和写文件相关的操作出错，`leveldb` 会设置 `bg_error_`，此时会拒绝写请求并不会触发 `compaction`，而且没有方式清空 `bg_error_`，只能重启进行修复。其实这里可以使用类似
+`Redis` 的策略，当写操作失败时，`truncate` 掉 `short write` 部分并进行重试，当成功写入时恢复状态并接收写请求。
+
