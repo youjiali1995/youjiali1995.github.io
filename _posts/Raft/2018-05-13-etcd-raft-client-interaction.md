@@ -72,7 +72,7 @@ func stepFollower(r *raft, m pb.Message) error {
 1. `leader` 必须在当前 `term` 提交过 `log entry` 才能处理读请求。因为 `leader` 是按照 `log` 的新旧选举而不是 `committed index`，所以新 `leader` 的 `committed index` 可能落后，通过在新 `term` 提交
 `log entry` 来更新到最新，同时也能提交之前 `term` 未提交的 `log`。`Raft` 通过给新 `leader` 追加一个当前 `term` 的 `no-op entry` 来解决这个问题。
 2. 保存当前的 `commited index` 为 `readIndex`。`readIndex` 即是能够保证线性一致性的最小的 `commited index`。
-3. `leader` 给其他节点发送 `heartbeat` 确保自己仍是 `leader`。
+3. `leader` 需要确认自己仍是有效的 `leader`，通过给其他节点发送新一轮 `heartbeat` 并收到 `majority` 的成功响应来保证。
 4. `leader` 等待状态机执行 `committed log`，直到 `applied index >= readIndex`。
 5. `leader` 将结果返回给客户端。
 
