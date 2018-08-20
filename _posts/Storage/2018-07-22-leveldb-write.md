@@ -145,7 +145,7 @@ class AtomicPointer {
 
 `AtomicPointer` 提供了以下语义(我认为的，可能这里就已经出错了)：
 * 原子性: `store/load` 是原子的，不会被其他线程看到 `half-write`。
-* 可见性: `Release_Store/AcquireLoad` 提供了 `release/acquire` 语义。`Release_Store` 立即对接下来的 `Acquire_Load` 可见；`Release_Store` 之前的写命令对 `Acquire_Load` 之后的读命令可见。
+* 可见性: `Release_Store/Acquire_Load` 提供了 `release/acquire` 语义。`Release_Store` 立即对接下来的 `Acquire_Load` 可见；`Release_Store` 之前的写命令对 `Acquire_Load` 之后的读命令可见。
 
 我主要关注 `linux on x86/64` 下的实现，为了搞懂有一些细节需要了解：
 * 多核体系下，每个 `CPU` 有独占的 `cache`，使用 `MESI` 协议来保证 `cache coherence`。为了降低同步对性能的影响，每个 `CPU` 有 `store buffer` 和 `invalidate queue` 来缓冲相应的同步消息，对同步消息处理
@@ -170,7 +170,7 @@ class AtomicPointer {
 * 除了 `CPU` 乱序，编译器也会在保证单线程程序正确性的前提下，对命令乱序处理，同样有 `compiler barrier` 保证编译的命令顺序。
 
 `x86/64` 是 `strong memory model`，`load/store` 自带 `acquire/release` 语义，只会出现操作不同地址的 `StoreLoad` 乱序。对于 `naturally aligned native types` 且大小不超过 `memory bus` 的变量读写操作是原子的
-，所以只要防止编译器乱序即可。所以 `leveldb` 的 `atomic pointer` 在 `gcc on x86` 的实现中只使用了 `compiler barrier`。
+，所以只要防止编译器乱序即可。所以 `leveldb` 的 `AtomicPointer` 在 `gcc on x86` 的实现中只使用了 `compiler barrier`。
 
 比较奇怪的是，按照我的理解 `acquire/release` 语义只能保证可见性顺序，所以不能保证对 `AtomicPointer` 的修改立即对其他线程可见，难道是可见的时间很短可以忽略不计。
 `mutex` 的加锁应该对应 `acquire`，解锁对应 `release`，所以可以保证临界区内的修改对其他加锁的线程是可见的，但是要有方式限制只有一个线程可以进入临界区。可能是我什么地方疏漏了或者理解有误，这方面比较薄弱，
