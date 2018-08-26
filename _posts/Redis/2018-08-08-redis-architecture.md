@@ -97,6 +97,8 @@ categories: Redis
 `master` 在过期或者淘汰时，会给 `slave` 发送 `DELETE` 命令。`slave` 不主动删除过期的数据，但是访问过期数据时会返回空，会等待 `master` 传来删除命令再删除。但是 `slave` 在目前的实现中会触发淘汰，
 即使 `maxmemory` 设置相同，也有可能 `slave` 先淘汰，这会导致主从数据不一致，在之后的版本可能会修改。
 
+`Redis` 提供的是最终一致性，当 `slave` 和 `master` 的连接断开时，如果设置了 `slave-serve-stale-data`，`slave` 仍然会接收读请求。
+
 ### 短暂断连后的同步
 在之前的实现中，当 `master` 和 `slave` 之间的连接出问题时，会重走一遍 `Full Resync` 的流程，既浪费 `CPU` 和网络资源，也没有必要。为了缓解这个问题，
 `Redis` 增加了 `3` 个元素，实现了短暂断连后的部分同步：
