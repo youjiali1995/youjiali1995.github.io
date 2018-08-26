@@ -188,6 +188,10 @@ categories: Redis
 
 除了协议会影响兼容性，`RDB` 的版本同样会影响，`RDB` 中会保存 `RDB Version`，旧版本的 `Redis` 不能加载新版本的 `RDB` 文件。
 
+### 未来
+在目前的 `Redis` 实现中，`Replication` 和 `Persistence` 是不相关的，但是 `RDB+AOF` 天然提供了主从复制需要的一切数据。在未来，每个节点可以记录 `AOF` 中命令的索引，且主从间记录 `Operation Offset`，
+来实现 `AOF` 部分同步。
+
 ## Sentinel
 
 ## Cluster
