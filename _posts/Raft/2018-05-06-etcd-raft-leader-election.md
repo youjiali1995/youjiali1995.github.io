@@ -62,7 +62,7 @@ r.send(pb.Message{Term: term, To: id, Type: voteMsg, Index: r.raftLog.lastIndex(
 ```
 
 当收到其他节点发起的投票消息时，处理过程如下：
-1. 成为 `follower`: 消息中包含了发起投票节点的 `term`，一般会比当前节点大；
+1. 成为 `follower`，并重置 `electionElapsed`: 消息中包含了发起投票节点的 `term`，一般会比当前节点大；
 2. 判断是否能够投票:
 ```go
 // We can vote if this is a repeat of a vote we've already cast...
@@ -79,12 +79,12 @@ func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 }
 ```
 4. 返回响应:
-    * 同意:
+    * 同意。成功投票会重置自己的 `electionElapsed`，避免自己触发选举，提高选举效率:
 ```go
 r.send(pb.Message{To: m.From, Term: m.Term, Type: voteRespMsgType(m.Type)})
 if m.Type == pb.MsgVote {
     // Only record real votes.
-    r.electionElapsed = 0
+    r.electionElapsed = 0 // 成功投票重置选举超时时间
     r.Vote = m.From // 当前 term 只会给一个节点投票
 }
 ```

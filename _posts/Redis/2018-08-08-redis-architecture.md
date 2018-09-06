@@ -164,22 +164,22 @@ categories: Redis
 * `master` 被 `network partition` 了。
 
 为了尽量减少数据丢失，需要选择最新的 `slave` 成为新的 `master`，通过比较各 `slave` 的 `Replication Offset` 即可。但是如果是 `network partition`，可能还有客户端连接在旧 `master` 上，此时有 2 个
-`master` 同时处理写请求，也就是发生了脑裂，当网络恢复后，旧 `master` 触发 `Full Resync` 会导致数据丢失。异步复制想要在这种情况下不丢失任何数据很困难，`Redis` 为了减少丢失，有如下配置：
+`master` 同时处理写请求，也就是发生了 `split brain`，当网络恢复后，旧 `master` 触发 `Full Resync` 会导致数据丢失。异步复制想要在这种情况下不丢失任何数据很困难，`Redis` 为了减少丢失，有如下配置：
 * `min-slaves-to-write`
 * `min-slaves-max-lag`
 
-只有当 `master` 的 `online slave` 中有超过 `min-slaves-to-write` 个 `slave` 的 `repl_ack_time <= min-slaves-max-lag` 才处理写命令。
+只有当 `master` 的 `online slave` 中有大于等于 `min-slaves-to-write` 个 `slave` 的 `repl_ack_time <= min-slaves-max-lag` 才处理写命令。
 
 *注*：`master` 和 `slave` 间有保活机制，超时会释放连接:
 * `master` 定期给 `slave` 发送 `PING`。
-* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`。`master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
+* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`，`master` 记录各个 `slave` 的 `repl_ack_time`，同时 `master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
 
 ### 级联 slave
-若是所有 `slave` 都挂载在 `master` 上，会给 `master` 带来很大的复制压力。`Redis` 支持级联 `slave`，此时 `slave` 会作为代理，把从 `master` 接收到的数据发送给自己 `slave`，保证所有节点
+若是所有 `slave` 都挂载在 `master` 上，会给 `master` 带来很大的复制压力。`Redis` 支持级联 `slave`，此时 `slave` 会作为代理，把从 `master` 接收到的数据发送给自己的 `slave`，保证所有节点
 数据的一致。
 
 级联 `slave` 的也从 `slave` 侧的 `Replication Backlog` 中受益，短暂断连只需要部分同步。若一个有 `slave` 的节点挂载到其他节点上，会立刻释放掉所有 `slave` 的连接，
-当该节点与新 `master` 同步完成后，会接受自己 `slave` 的同步请求。
+当该节点与新 `master` 同步完成后，会接受自己 `slave` 的同步请求，保证了数据的一致。
 
 ### 重启
 `RDB` 文件中会保存 `replication` 相关的信息，如 `selected db`、`Replication ID` 和 `Replication Offset`，只有在配置文件中设置了 `slaveof`，重启时才会恢复这些信息尝试与 `master` 部分同步。
@@ -195,7 +195,109 @@ categories: Redis
 来实现 `AOF` 部分同步。
 
 ## Sentinel
+`Redis Sentinel` 提供了 `Redis` 的高可用，主要功能是在 `master` 不可用的情况下，执行主从切换。`Redis Sentinel` 同样是分布式的，每个 `sentinel` 可以监控多组 `replicas`，每组 `replicas` 同时被
+多个 `sentinel` 监控。监控相同 `replicas` 的 `sentinel` 共同协作判定 `master` 是否出错和执行主从切换，能够减少 `false positive` 的发生并提供 `sentinel` 的高可用。
+
+`Redis Sentinel` 没用过，也不太了解，我认为 `sentinel` 需要考虑的几个问题如下：
+* 节点的发现和节点配置变更(增加或删除节点)，节点包括 `redis` 和 `sentinel` 节点。
+* 节点之间如何通信。
+* 如何判断一个 `master` 不可用。
+* 如何执行 `failover`。
+* 异常情况处理，如 `failover` 执行失败。
+* 客户端使用。
+
+### Architecture
+`Redis Sentinel` 和 `Redis Server` 是一套代码，在使用 `sentinel` 模式时，只支持 `sentinel` 的命令，并增加了 `sentinel` 定时器，所有操作都通过定时器触发。`sentinel` 与其他节点的通信
+使用 `hiredis` 的异步接口，嵌入在 `Redis` 的 `eventloop` 中，因为在相同线程的 `eventloop` 中，使用起来和同步接口一样方便，但有着异步接口的灵活性和性能。
+
+### 节点发现
+`sentinel` 的元数据都保存在 `sentinel.conf` 中，`sentinel` 在启动时加载 `sentinel monitor <name> <host> <port> <quorum>` 找到需要监控的 `master` 地址，每组 `replicas` 使用 `name` 区分，相应的
+监控配置也是针对不同的 `name`。`sentinel` 会为每个节点建立连接，包括 `Redis` 节点和其他的 `sentinel` 节点，
+除 `sentinel` 节点外，每个节点会建立 `2` 个连接：一个用于发送命令；一个是 `pub/sub` 连接，接收订阅的 `channel` 消息。
+
+在正常情况下，`sentinel` 会每隔 `SENTINEL_INFO_PERIOD(10s)` 给每个 `Redis` 节点发送 `INFO` 命令，`master` 的 `INFO REPLICATION` 中有 `slave` 的信息，`sentinel` 通过这些信息找到 `master` 对应 `slave` 的
+地址，并添加进监控。
+
+`sentinel` 会订阅每个 `Redis` 的 `SENTINEL_HELLO_CHANNEL(__sentinel__:hello)`，同时每隔 `SENTINEL_PUBLISH_PERIOD(2s)` 对每组 `replicas` 各节点的 `SENTINEL_HELLO_CHANNEL` 发布一条：
+> sentinel_ip,sentinel_port,sentinel_runid,current_epoch,
+> master_name,master_ip,master_port,master_config_epoch.
+
+`sentinel` 通过接收到的订阅消息，找到监控相同 `master_name` 的 `sentinel`。
+
+### 异常检测
+`sentinel` 每隔最多 `SENTINEL_PING_PERIOD(1s)` 给每个节点发送 `PING` 来判断节点是否正常，若超过 `sentinel down-after-milliseconds <name> <milliseconds>` 配置的时间未接收到有效响应就会认为该节点不可用。
+单个 `sentinel` 认为的节点不可用是 `SDOWN(Subjectively Down)`，对于 `SDOWN` 状态的 `master`，`sentinel` 每隔 `SENTINEL_ASK_PERIOD(1s)` 向其他 `sentinel` 发送 `SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <current-epoch> *` 
+询问它的状态，只有大于等于 `quorum` 个 `sentinel` 同时认为该节点不可用才会变为 `ODOWN(Objectively Down)` 并执行 `failover`，这样能够减少 `false positive` 的发生，`quorum` 使用  `sentinel monitor <name> <host> <port> <quorum>` 配置，不要求是 `majority`。
+
+### Leader Election
+因为有多个 `sentinel` 同时监控一组 `replicas`，需要选举出一个 `leader` 来执行 `failover`，`Redis Sentinel` 使用类似 `Raft` 的 `leader election` 算法：
+* 使用 `epoch` 来区分每一次选举，每个 `epoch` 只能有一个 `leader`，每个 `sentinel` 在一个 `epoch` 只会给一个 `sentinel` 投票，收到 `majority` 的投票的 `sentinel` 成为 `leader`。
+
+在发现 `master` 处于 `ODOWN` 时，`sentinel` 会增加自己的 `current_epoch`，并向其他 `sentinel` 发送 `SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <current-epoch> <runid>`，这个命令除了返回某个 `master` 的状态
+还会发起投票，若目标 `sentinel` 发现参数 `req_epoch` 比之前投票的 `leader_epoch` 大就会投票并更新 `epoch` 和投票的 `leader`，否则就返回当前的 `epoch` 和 `leader`。收到 `majority` 投票的 `sentinel` 就会成为 `leader` 执行 `failover`。
+
+### Failover
+`leader` 会挑选合适的 `slave` 成为新的 `master`：
+* 排除 `DOWN` 状态、太久没回应 `PING` 或者 `INFO`、与 `master` 断连太久、优先级为 `0` 的 `slave`。优先级使用 `slave-priority` 配置。
+* 在剩下的 `slave` 中按照优先级、`repl_offset`、`runid` 进行排序，优先级越小、`repl_offset` 越大、`runid` 越小则选中机会越大。
+
+挑选出 `slave` 后发送 `SLAVEOF NO ONE` 成为新 `master`，从 `INFO` 中发现 `role` 从 `slave->master` 后，将其他 `slave` 复制到新 `master` 上，从而完成 `failover`。
+
+### 异常处理
+写出理想情况下正常工作的代码很容易，要写出在任何环境下都能正常工作的代码就很困难，分布式系统中大部分代码都是为了处理异常情况。首先来看 `leader election` 相关的异常，`Redis Sentinel` 会遇到和 `Raft` 同样的问题，
+如 `split vote`、选举失败等，最终的解决办法都是重新选举，同时为了减少 `split vote` 会增加一些随机性。`sentinel failover-timeout <master-name> <milliseconds>` 设置了 `failover` 的超时时间。`sentinel` 在投票给其他节点时，
+会记录 `failover_start_time`，在 `2*failover_timeout` 的时间内不会对相同 `master` 发起新一轮 `failover` 的选举。当发起选举的 `sentinel` 超过 `failover_timeout` 仍未选出有效的 `leader`，会进行新一轮选举。
+为了减少 `split vote`，`Redis Sentinel` 在 `2` 个地方增加了随机性：
+* `hz` 会在 `[CONFIG_DEFAULT_HZ, 2*CONFIG_DEFAULT_HZ)` 随机变化，从而各 `sentinel` 定时器调用频率不同。
+* `failover_start_time` 会在当前时间基础上随机增加最多 `SENTINEL_MAX_DESYNC(1s)`，降低同时发生超时的概率。
+
+`Redis Sentinel` 在 `2012` 年就实现了，而 `Raft` 在 `2014` 年发表，除选举算法外，其余的实现差别很大。`Redis Sentinel` 的 `leader` 和 `Raft` 有几点不同，这增加了复杂性：
+* 只有 `failover` 时才会选出 `leader`，`leader` 是一次性的。
+* 即使 `leader` 在 `sentinel` 角度看来是有效的，但是从 `Redis` 角度来看可能是无效的，比如 `leader` 无法连上任意一个 `Redis` 节点，也就无法完成 `failover`。
+* `leader` 需要执行的 `failover` 的复杂性，如某些 `slave` 不能立刻复制到新的 `master`、在 `failover` 过程中原先的 `master` 恢复了、新的 `master` 在 `failover` 过程中挂了。
+* `leader` 不是和 `follower` 进行交互，而是与其他 `Redis` 节点交互，所以不太容易采取 `Raft` 一样的策略通过 `majority` 的提交来保证正确性，正确性对于 `sentinel` 来说是保证 `failover` 的唯一性。
+* `sentinel` 会同时监控多组 `replicas`，可能同时成为多组 `replicas` 的 `leader`。
+
+其中最显著的差别是第 `4` 点，这极大影响了 `sentinel` 的实现。`Redis Sentinel` 只保证了相同 `epoch` 不会有多个 `leader`，但是可能会有多个处于不同 `epoch` 的 `leader` 在执行 `failover`，
+这就出现了 `split brain`，在 `Redis Sentinel` 目前的实现中是不可避免的，因为 `leader` 在执行 `failover` 的过程中，不再与其他 `sentinel` 交互:
+* `leader` 节点不会发送 `heartbeat` 来防止其他 `sentinel` 重新选举。
+* `failover` 的执行不用经过 `majority` 的提交。
+* `leader` 不会 `step down`，即使有 `epoch` 更高的 `leader` 产生。这是因为如果发生了 `network partition`，因为不需要 `majority` 的保证，仍然无法避免 `split brain`。
+
+`split brain` 无法避免，但是 `Redis Sentinel` 会解决 `split brain`，不会影响结果。这简化了 `Redis Sentinel` 对于前 `2` 个问题的处理：
+* 将 `leader election` 和 `failover` 作为一个整体，非 `leader` 的 `failover_timeout` 针对的是 `failover` 完成而不是 `leader election` 完成，若超时会触发选举选出新的 `leader` 即使之前的 `leader` 还存在。
+
+`failover` 完成对于不同状态的 `sentinel` 有不同的含义：
+* 对于 `leader` 而言，要等待所有 `slave` 都复制到新的 `master`。
+* 对于非 `leader` 而言，新 `master` 的 `SLAVEOF NO ONE` 完成 `failover` 就完成。当 `leader` 发现挑选的 `slave` 转变为 `master` 后，会通过 `SENTINEL_HELLO_CHANNEL` 发送 `hello` 消息给其他 `sentinel`，消息中包含新 `master` 的地址，
+其他 `sentinel` 收到这个消息时会重置该 `replicas` 的状态，切换到新的 `master` 配置，从而开始监控新的 `master`。
+
+现在可以来看一下 `sentinel` 是如何处理 `split brain` 了，原则如下：
+* 若某个 `leader` 率先完成了 `SLAVEOF NO ONE` 操作，则其他 `leader` 中断 `failover`。
+* 若多个 `leader` 同时完成 `SLAVEOF NO ONE` 操作，则 `epoch` 最大的胜利，其余 `leader` 中断 `failover`。
+
+`leader` 会记录执行 `failover` 时的 `epoch`，当 `SLAVEOF NO ONE` 操作完成时，会设置对应 `replicas` 的 `config_epoch` 为 `failover_epoch`。通过 `hello` 消息，其余 `sentinel` 会接收到每组 `replicas` 的 `config_epoch`，
+若比自己的大就会中断 `failover`，更新配置。
+
+若是 `leader` 之间无法通信，但是都能连上 `Redis` 节点，且 `leader` 挑选不同的 `slave` 为新的 `master`，会导致多个 `leader` 一直执行不同配置的 `failover`。`Redis Sentinel` 很巧妙的解决了这个问题:
+* `sentinel` 通过 `Redis` 节点作为中介通信 `hello` 消息，而不是直接通信。
+* 在这种实现下，`leader` 之间无法通信的情况只能是不同 `leader` 能够连上的 `Redis` 节点之间无重叠，这就回退到了 `Redis Replication` 的 `split brain`，`sentinel` 是无能为力的，`Redis` 会通过配置减少数据丢失。
+
+`failover` 操作本身就比较复杂，在很多阶段都会发生异常:
+* `sentinel` 通过超时重新选举能够解决大部分问题，`leader` 在执行 `failover` 的每个阶段也会有 `failover_timeout` 超时时间，超时会中断 `failover`。
+* 对于不能立刻复制到新 `master` 的 `slave`，如之前 `ODOWN` 的 `master`，`sentinel` 会一直重试直到成功。
+* 若是 `failover` 过程中新 `master` 又挂了，会重新选举执行新一轮 `failover`；若老 `master` 恢复了，`failover` 会继续执行。
+
+### 多组 Replicas
+`sentinel` 会同时监控多组 `replicas`，所以单个 `sentinel` 可能同时成为多组 `replicas` 的 `leader`。`Redis Sentinel` 对于一个 `epoch` 只会有一个 `leader`，但不要求当前的 `leader` 状态一定是 `current_epoch` 的，
+所以会保持不同 `epoch` 的 `leader` 状态，从而支持同时 `failover` 多组 `replicas`。
+
+### 配置变更
+配置变更包括增加或删除新的节点(`Redis` 节点或者 `sentinel` 节点)、监控新的 `replicas` 等。因为 `sentinel` 有自动发现节点的机制，所以增加节点很容易，而删除节点是通过 `reset` 当前状态重新发现实现的。值得一提的是，
+和 `Raft` 一样，在给一组 `replicas` 增加或者删除 `sentinel` 时，`Redis` 建议一次只增加或删除一个，防止同一 `epoch` 产生多个 `leader`。
+
+### 客户端使用
+因为 `failover` 会变更 `replicas` 的主从状态，客户端需要重新路由。`sentinel` 在发送 `SLAVEOF` 命令时，会让 `Redis` 断连所有客户端，客户端在连接时可以先从 `sentinel` 获取当前 `master` 的地址再连接。
+`sentinel` 还提供了调用脚本的功能，在发生 `failover` 导致配置变更时，会调用用户设置的脚本，可以执行一些通知或者客户端配置变更等操作。
 
 ## Cluster
-
-## 一些坑
