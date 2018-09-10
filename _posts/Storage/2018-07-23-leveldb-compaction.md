@@ -148,8 +148,8 @@ categories: Storage
 `sstable compaction` 的过程也比较简单，和 `memtable compaction` 的区别在于，这里是多个文件，类似 `merge sort` 的流程，`leveldb` 中也实现了 `MergingIterator` 用于
 在多个迭代器的情况下有序迭代。需要关注的是无用数据的清理，每个 `key` 会有多个版本，再也不会访问到的版本不需要保留。`leveldb` 支持 `snapshot`，也就是 `sequence`，在其内部维护了一个 `SnapshotList`，
 保存着所有正在使用的 `snapshot`，会根据当前使用到的 `smallest snapshot` 进行清理(若没有则是 `last sequence`)：
-* 只需要保存第一个小于等于 `smallest snapshot` 的版本即可。
-* 若第一个满足要求的版本是删除操作，只要高层没有这个 `key` 也可以丢弃这个版本。
+* 只需要保存 `smallest snapshot` 能够访问到的及更高版本的，即保存第一个小于等于 `smallest snapshot` 的版本及更高版本即可。
+* 若第一个小于等于 `smallest snapshot` 的版本是删除操作，只要高层没有这个 `key` 也可以丢弃这个版本。
 
 高层的 `sstable` 会进行切割，除了大小限制 `max_file_size(2MB)` 外，还会防止该文件与更高一层的 `sstable` 重叠太多，会导致该文件的 `compaction` 消耗很大。同时在 `sstable compaction` 
 的过程中若发现存在 `immutable memtable`，会进行 `memtable compaction`，防止阻塞写操作。

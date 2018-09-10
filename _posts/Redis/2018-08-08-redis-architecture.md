@@ -147,6 +147,13 @@ categories: Redis
 * 新的 `master` 会保存旧 `master` 的 `Replication ID(replid2)` 和应用到的 `Replication Offset(second_replid_offset)`。新 `master` 也会根据旧 `master` 的
 同步进度来判断 `slave` 能否部分同步。需要注意的是，比新 `master` 同步进度新的 `slave` 不能部分同步，即使 `Replication Offset` 在 `Replication Backlog` 中。
 
+### Keepalive
+`master` 和 `slave` 间有保活机制，超时会释放连接:
+* `master` 定期给 `slave` 发送 `PING`。
+* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`，`master` 记录各个 `slave` 的 `repl_ack_time`，同时 `master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
+
+在 `Full Resync` 时，`slave` 会清空数据并加载 `RDB`，可能会阻塞很久。为了防止这时候超时，`slave` 会在清空数据和加载数据时间歇性发送 `\n` 给 `master` 来保活。
+
 ### 数据丢失
 因为 `Reids` 是异步复制，在某些情况下，数据丢失无法避免，如 `master` 接收到客户端写命令并返回成功，但没有同步给任何一个 `slave` 就挂掉。我们能做的就是在
 所有节点正常工作时，保证不会丢失数据，及尽可能减少出错情况下丢失的数据。
@@ -170,13 +177,9 @@ categories: Redis
 
 只有当 `master` 的 `online slave` 中有大于等于 `min-slaves-to-write` 个 `slave` 的 `repl_ack_time <= min-slaves-max-lag` 才处理写命令。
 
-*注*：`master` 和 `slave` 间有保活机制，超时会释放连接:
-* `master` 定期给 `slave` 发送 `PING`。
-* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`，`master` 记录各个 `slave` 的 `repl_ack_time`，同时 `master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
-
 ### 级联 slave
-若是所有 `slave` 都挂载在 `master` 上，会给 `master` 带来很大的复制压力。`Redis` 支持级联 `slave`，此时 `slave` 会作为代理，把从 `master` 接收到的数据发送给自己的 `slave`，保证所有节点
-数据的一致。
+若是所有 `slave` 都挂载在 `master` 上，会给 `master` 带来很大的复制压力。`Redis` 支持级联 `slave`，此时 `slave` 会作为代理，把从 `master` 接收到的数据发送给自己的 `slave`，自己不再产生复制数据，
+保证所有节点数据的一致。
 
 级联 `slave` 的也从 `slave` 侧的 `Replication Backlog` 中受益，短暂断连只需要部分同步。若一个有 `slave` 的节点挂载到其他节点上，会立刻释放掉所有 `slave` 的连接，
 当该节点与新 `master` 同步完成后，会接受自己 `slave` 的同步请求，保证了数据的一致。
@@ -233,8 +236,14 @@ categories: Redis
 因为有多个 `sentinel` 同时监控一组 `replicas`，需要选举出一个 `leader` 来执行 `failover`，`Redis Sentinel` 使用类似 `Raft` 的 `leader election` 算法：
 * 使用 `epoch` 来区分每一次选举，每个 `epoch` 只能有一个 `leader`，每个 `sentinel` 在一个 `epoch` 只会给一个 `sentinel` 投票，收到 `majority` 的投票的 `sentinel` 成为 `leader`。
 
+`Redis Sentinel` 中有多个 `epoch`，这里解释一下:
+* `current_epoch`：`sentinel` 维护的单调递增的 `epoch`，会在发起选举时增加，在监控相同 `replicas` 的 `sentinel` 间同步，类似 `Raft` 的 `term`。
+* `leader_epoch`：记录投票的 `epoch`，保证每个 `epoch` 只投给一个节点。
+* `failover_epoch`：发起投票时的 `epoch`，用于区分不同的 `failover`。
+* `config_epoch`：`replicas` 的主从配置 `epoch`，即完成的 `failover_epoch`。
+
 在发现 `master` 处于 `ODOWN` 时，`sentinel` 会增加自己的 `current_epoch`，并向其他 `sentinel` 发送 `SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <current-epoch> <runid>`，这个命令除了返回某个 `master` 的状态
-还会发起投票，若目标 `sentinel` 发现参数 `req_epoch` 比之前投票的 `leader_epoch` 大就会投票并更新 `epoch` 和投票的 `leader`，否则就返回当前的 `epoch` 和 `leader`。收到 `majority` 投票的 `sentinel` 就会成为 `leader` 执行 `failover`。
+还会发起投票，若目标 `sentinel` 发现参数 `req_epoch` 比之前投票的 `leader_epoch` 大就会投票并更新 `leader_epoch` 和投票的 `leader`，否则就返回当前的 `leader_epoch` 和 `leader`。收到 `majority` 投票的 `sentinel` 就会成为 `leader` 执行 `failover`。
 
 ### Failover
 `leader` 会挑选合适的 `slave` 成为新的 `master`：
@@ -295,6 +304,9 @@ categories: Redis
 ### 配置变更
 配置变更包括增加或删除新的节点(`Redis` 节点或者 `sentinel` 节点)、监控新的 `replicas` 等。因为 `sentinel` 有自动发现节点的机制，所以增加节点很容易，而删除节点是通过 `reset` 当前状态重新发现实现的。值得一提的是，
 和 `Raft` 一样，在给一组 `replicas` 增加或者删除 `sentinel` 时，`Redis` 建议一次只增加或删除一个，防止同一 `epoch` 产生多个 `leader`。
+
+### Manual Failover
+手动执行 `failover` 要通过 `sentinel` 执行，否则 `sentinel` 发现配置不同，会强制恢复到 `sentinel` 认为的主从配置。逻辑和自动 `failover` 相同，接收到 `failover` 的 `sentinel` 会立刻发起选举。
 
 ### 客户端使用
 因为 `failover` 会变更 `replicas` 的主从状态，客户端需要重新路由。`sentinel` 在发送 `SLAVEOF` 命令时，会让 `Redis` 断连所有客户端，客户端在连接时可以先从 `sentinel` 获取当前 `master` 的地址再连接。
