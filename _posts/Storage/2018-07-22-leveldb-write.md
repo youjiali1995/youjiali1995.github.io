@@ -31,7 +31,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
   }
 ```
 
-`leveldb` 会将写操作合并执行：将 `deque` 中正在等待执行的写操作 `batch` 到当前写操作中一起执行，执行后设置 `done` 标记完成。
+`leveldb` 会将写操作合并执行：队首的线程将 `deque` 中正在等待执行的写操作 `batch` 到当前线程中一起执行，执行后设置 `done` 通知其他线程完成。`batch` 能够提高写 `WAL` 的效率。
 
 ## WAL
 `leveldb` 不是直接将 `kv` 插入到 `memtable` 中，而是先生成 `WAL`，然后解析 `WAL` 插入，目的是为了减少重复代码，复用了重启时用 `WAL` 恢复 `memtable` 的代码。
@@ -39,7 +39,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
 
 ![image](/assets/images/leveldb/wal.png)
 
-写操作合并就是修改 `WriteBatch` 的 `Count` 并追加 `Record`。
+`WriteBatch` 记录了当前 `batch` 的起始 `Sequence`，会追加在 `key` 后用于实现 `MVCC`，写操作合并就是修改 `WriteBatch` 的 `Count` 并追加 `Record`。
 
 ### varint
 `leveldb` 中对 `int` 编码有2种格式:

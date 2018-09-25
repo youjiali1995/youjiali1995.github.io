@@ -129,10 +129,10 @@ categories: Storage
 `immutable memtable` 的 `compaction`。`compaction` 会由单独的线程来执行。
 
 `memtable compaction` 的过程很简单，顺序遍历 `memtable` 将所有的 `key/value` 转储为 `sstable` 格式即可，生成的 `sstable` 不一定在 `level-0`，只要满足上面的保证即可。
-要注意的是，`leveldb` 为了防止 `level-0` 的 `sstable` 数量太多会延缓写操作：
-* 当 `sstable` 数量达到 `kL0_SlowdownWritesTrigger(8)` 时，每个写操作会 `sleep(1ms)`。
-* 当 `memtable` 需要 `compaction` 但之前的 `immutable memtable compaction` 还未完成时，会等待之前的完成。
-* 当 `sstable` 数量达到 `kL0_StopWritesTrigger(12)` 时，会等待之前的 `compaction` 完成。
+要注意的是，`leveldb` 为了防止 `sstable` 数量太多会对写操作进行流控：
+* 当 `level-0 sstable` 数量达到 `kL0_SlowdownWritesTrigger(8)` 时，每个写操作会 `sleep(1ms)`。
+* 当前 `memtable` 已满需要 `compaction` 但之前的 `immutable memtable compaction` 还未完成时，会等待之前的完成。
+* 当 `level-0 sstable` 数量达到 `kL0_StopWritesTrigger(12)` 时，会等待 `level-0 compaction` 完成。
 
 ### Sstable Compaction
 触发 `sstable compaction` 的条件如下：

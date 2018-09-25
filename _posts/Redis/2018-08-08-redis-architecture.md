@@ -14,8 +14,7 @@ categories: Redis
 单线程就要求每个操作不能阻塞太久，`Redis` 内部处处体现了均摊的思想：把耗时长的操作拆分为多次，每次只执行一小部分，如 `incremental rehash`。
 `Redis` 其实还有多个 `background I/O` 线程，用于执行一些比较耗时的操作：如 `fsync`、`close` 和 `lazy free`。
 
-`Redis` 所有操作都在内存中执行，性能很高。不开启持久化，同机房内简单的 `get/set` 操作 `QPS` 在 `10w` 级别，`latency` 在 `1ms` 以内；若使用 `pipeline`，`QPS` 可达
-`50w`，`latency` 也就 `1ms` 上下。
+`Redis` 所有操作都在内存中执行，性能很高。不开启持久化，同机房内单节点简单的 `get/set` 操作 `QPS` 在 `10w` 级别，`latency` 在 `1ms` 以内。
 
 ## Persistence
 `Redis` 持久化有 `2` 种方式：`RDB` 和 `AOF`，是对性能和数据完整性的权衡：
@@ -46,7 +45,8 @@ categories: Redis
 * `always`：立刻退出。
 
 采取上面的处理方式是因为 `Redis` 在发生写 `AOF` 错误时，仍会把成功的响应返回给客户端。因为 `no || everysecond` 本身就不能保证所有数据的安全性，所以丢失少量写命令是可以接受的。
-而 `always` 需要保证每条写命令的安全性，所以在写失败时不能返回成功响应。
+而 `always` 需要保证每条写命令的安全性，所以在写失败时不能返回成功响应，`Redis` 最近才修复一个相关的 `BUG`，因为事件循环是先处理读事件，然后是写事件，如果连接之前注册了写事件，
+会在一个事件循环里把当前请求的响应发送出去，这就违背了先写 `AOF` 再写响应的原则，有可能导致数据丢失，修复之后会先处理写事件再处理读事件。
 
 `AOF` 的格式即 `RESP` 格式，逐条执行来恢复数据，所以恢复速度较 `RDB` 慢。`AOF` 的格式不紧凑，且冗余数据较多，当 `AOF` 文件大小增长超过一定比例时，会触发 `aofrewrite`：
 `fork` 出子进程，对当前的数据集做一次 `AOF` 格式的 `snapshot`。在 `aofrewrite` 过程中的增量命令仍会写入当前的 `AOF` 文件，同时累积在 `aof_rewrite_buf_blocks` 中，当
@@ -70,7 +70,7 @@ categories: Redis
 `Replication` 可以降低丢失数据的风险，若是多副本三机房部署，所有节点同时挂掉的可能性几乎为零。`Replication` 还能扩展读的性能，通过读 `slave`、写 `master` 来分摊 `master` 的
 压力。
 
-`Redis` 的 `Replication` 是 `RSM` 模型，采用异步复制，提供最终一致性，这种方式性能很高；只负责复制，不负责高可用，高可用由其他 `layer` 提供，如 `Redis Sentinel`、`Redis Cluster`。
+`Redis` 的 `Replication` 是 `RSM` 模型，采用异步复制，提供最终一致性，而且是 `last-failover-wins`，这种方式性能很高；只负责复制，不负责高可用，高可用由其他 `layer` 提供，如 `Redis Sentinel`、`Redis Cluster`。
 
 后面的介绍不会按照 `Redis` 现有的复制流程介绍，但会介绍一些功能的演进。
 
@@ -88,7 +88,7 @@ categories: Redis
 
 ### 增量同步
 对于 `master` 而言，`slave` 只是特殊的 `client` 而已，`master` 对 `slave` 也是如此。`master` 会把接受到的写命令作为 `slave` 的 `reply` 发送给 `slave`，`slave` 一般会拒绝
-写操作，但会执行 `master` 发过来的。`master` 和 `slave` 之间是 `TCP` 长连接，`Redis` 依赖 `TCP` 的可靠性，认为要么超时、要么报错，否则数据一定会到达 `slave`，
+写操作，但会执行 `master` 发过来的，`slave` 也不会发送响应给 `master`。`master` 和 `slave` 之间是 `TCP` 长连接，`Redis` 依赖 `TCP` 的可靠性，认为要么超时、要么报错，否则数据一定会到达 `slave`，
 所以在增量同步的过程中不会对 `slave` 的同步进度进行校验。
 
 ### 数据一致性
@@ -207,11 +207,12 @@ categories: Redis
 * 如何判断一个 `master` 不可用。
 * 如何执行 `failover`。
 * 异常情况处理，如 `failover` 执行失败。
-* 客户端使用。
+* 使用方式。
 
 ### Architecture
 `Redis Sentinel` 和 `Redis Server` 是一套代码，在使用 `sentinel` 模式时，只支持 `sentinel` 的命令，并增加了 `sentinel` 定时器，所有操作都通过定时器触发。`sentinel` 与其他节点的通信
-使用 `hiredis` 的异步接口，嵌入在 `Redis` 的 `eventloop` 中，因为在相同线程的 `eventloop` 中，使用起来和同步接口一样方便，但有着异步接口的灵活性和性能。
+使用 `hiredis` 的异步接口，嵌入在 `Redis` 的 `eventloop` 中，因为在相同线程的 `eventloop` 中，使用起来和同步接口一样方便，但有着异步接口的灵活性和性能。`sentinel` 与节点的通信同样使用 `TCP` 长连接，
+依托于 `TCP` 的顺序性和可靠性，极大简化实现，如不用处理过时消息和考虑消息的顺序等。
 
 ### 节点发现
 `sentinel` 的元数据都保存在 `sentinel.conf` 中，`sentinel` 在启动时加载 `sentinel monitor <name> <host> <port> <quorum>` 找到需要监控的 `master` 地址，每组 `replicas` 使用 `name` 区分，相应的
@@ -230,7 +231,7 @@ categories: Redis
 ### 异常检测
 `sentinel` 每隔最多 `SENTINEL_PING_PERIOD(1s)` 给每个节点发送 `PING` 来判断节点是否正常，若超过 `sentinel down-after-milliseconds <name> <milliseconds>` 配置的时间未接收到有效响应就会认为该节点不可用。
 单个 `sentinel` 认为的节点不可用是 `SDOWN(Subjectively Down)`，对于 `SDOWN` 状态的 `master`，`sentinel` 每隔 `SENTINEL_ASK_PERIOD(1s)` 向其他 `sentinel` 发送 `SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <current-epoch> *` 
-询问它的状态，只有大于等于 `quorum` 个 `sentinel` 同时认为该节点不可用才会变为 `ODOWN(Objectively Down)` 并执行 `failover`，这样能够减少 `false positive` 的发生，`quorum` 使用  `sentinel monitor <name> <host> <port> <quorum>` 配置，不要求是 `majority`。
+询问它的状态，只有大于等于 `quorum` 个 `sentinel` 在 `SENTINEL_ASK_PERIOD*5(5s)` 内同时认为该节点不可用才会变为 `ODOWN(Objectively Down)` 并执行 `failover`，这样能够减少 `false positive` 的发生，`quorum` 使用  `sentinel monitor <name> <host> <port> <quorum>` 配置，不要求是 `majority`。
 
 ### Leader Election
 因为有多个 `sentinel` 同时监控一组 `replicas`，需要选举出一个 `leader` 来执行 `failover`，`Redis Sentinel` 使用类似 `Raft` 的 `leader election` 算法：
@@ -283,19 +284,19 @@ categories: Redis
 
 现在可以来看一下 `sentinel` 是如何处理 `split brain` 了，原则如下：
 * 若某个 `leader` 率先完成了 `SLAVEOF NO ONE` 操作，则其他 `leader` 中断 `failover`。
-* 若多个 `leader` 同时完成 `SLAVEOF NO ONE` 操作，则 `epoch` 最大的胜利，其余 `leader` 中断 `failover`。
+* 若多个 `leader` 同时完成 `SLAVEOF NO ONE` 操作，则 `epoch` 最大的胜利(`last failover wins`)，其余 `leader` 中断 `failover`。
 
 `leader` 会记录执行 `failover` 时的 `epoch`，当 `SLAVEOF NO ONE` 操作完成时，会设置对应 `replicas` 的 `config_epoch` 为 `failover_epoch`。通过 `hello` 消息，其余 `sentinel` 会接收到每组 `replicas` 的 `config_epoch`，
 若比自己的大就会中断 `failover`，更新配置。
 
-若是 `leader` 之间无法通信，但是都能连上 `Redis` 节点，且 `leader` 挑选不同的 `slave` 为新的 `master`，会导致多个 `leader` 一直执行不同配置的 `failover`。`Redis Sentinel` 很巧妙的解决了这个问题:
+若是 `leader` 之间无法通信，但是都能连上 `Redis` 节点，且 `leader` 挑选不同的 `slave` 为新的 `master`，可能导致多个 `leader` 一直执行不同配置的 `failover`。`Redis Sentinel` 很巧妙的解决了这个问题:
 * `sentinel` 通过 `Redis` 节点作为中介通信 `hello` 消息，而不是直接通信。
 * 在这种实现下，`leader` 之间无法通信的情况只能是不同 `leader` 能够连上的 `Redis` 节点之间无重叠，这就回退到了 `Redis Replication` 的 `split brain`，`sentinel` 是无能为力的，`Redis` 会通过配置减少数据丢失。
 
 `failover` 操作本身就比较复杂，在很多阶段都会发生异常:
-* `sentinel` 通过超时重新选举能够解决大部分问题，`leader` 在执行 `failover` 的每个阶段也会有 `failover_timeout` 超时时间，超时会中断 `failover`。
-* 对于不能立刻复制到新 `master` 的 `slave`，如之前 `ODOWN` 的 `master`，`sentinel` 会一直重试直到成功。
+* `leader` 在执行 `failover` 的每个阶段也会有 `failover_timeout` 超时时间，超时会中断 `failover`。`sentinel` 通过超时重新选举能够解决大部分问题，如挑选的 `slave` 挂了、执行 `failover` 的 `sentinel` 挂了。
 * 若是 `failover` 过程中新 `master` 又挂了，会重新选举执行新一轮 `failover`；若老 `master` 恢复了，`failover` 会继续执行。
+* 对于不能立刻复制到新 `master` 的 `slave`，如之前 `ODOWN` 的 `master`，该次 `failover` 的 `leader sentinel` 会一直重试直到成功；其他的 `sentinel` 也会帮助设置，为了处理 `leader sentinel` 挂掉的场景。
 
 ### 多组 Replicas
 `sentinel` 会同时监控多组 `replicas`，所以单个 `sentinel` 可能同时成为多组 `replicas` 的 `leader`。`Redis Sentinel` 对于一个 `epoch` 只会有一个 `leader`，但不要求当前的 `leader` 状态一定是 `current_epoch` 的，
@@ -308,8 +309,123 @@ categories: Redis
 ### Manual Failover
 手动执行 `failover` 要通过 `sentinel` 执行，否则 `sentinel` 发现配置不同，会强制恢复到 `sentinel` 认为的主从配置。逻辑和自动 `failover` 相同，接收到 `failover` 的 `sentinel` 会立刻发起选举。
 
-### 客户端使用
-因为 `failover` 会变更 `replicas` 的主从状态，客户端需要重新路由。`sentinel` 在发送 `SLAVEOF` 命令时，会让 `Redis` 断连所有客户端，客户端在连接时可以先从 `sentinel` 获取当前 `master` 的地址再连接。
-`sentinel` 还提供了调用脚本的功能，在发生 `failover` 导致配置变更时，会调用用户设置的脚本，可以执行一些通知或者客户端配置变更等操作。
+### 使用
+因为 `failover` 会变更 `replicas` 的主从状态，客户端需要重新路由。`sentinel` 在发送 `SLAVEOF` 命令时，会让 `Redis` 断连所有客户端，客户端在重连时可以先从 `sentinel` 获取当前 `master` 的地址再连接。
+`sentinel` 还提供了调用脚本的功能，在发生 `failover` 导致配置变更时，会调用用户设置的脚本，可以执行一些通知或者客户端配置变更等操作，同时 `sentinel` 还会在事件发生时，向相应的 `channel` 广播消息，其他
+服务可以订阅这些消息进行处理。
+
+`sentinel` 的部署要精心考虑，因为:
+* `sentinel` 根据与 `Redis` 的通信来发现问题。
+* 根据与其他 `sentinel` 的通信结果来确定问题。
+* 触发的 `failover` 是不能取消的(上面提到了 `split brain` 时的冲突解决有可能取消 `failover`，但对于 `Redis` 而言，`failover` 一定发生了)。
+
+在某些场景下不发生 `failover` 会更好，如 `sentinel` 和 `Redis` 都是两机房部署且 `majority sentinel` 和 `majority Redis` 在不同的机房，`master` 在 `majority Redis` 的机房，此时发生 `network partition`。
+`majority sentinel` 会 `failover` 出新的 `master`，若是配置了 `min-slaves-to-write` 为 `quorum`，新选举的 `master` 会拒绝写入，原先的 `master` 仍然正常写入，当网络恢复后，会强制让原先的 `master` 复制
+新的 `master` 就导致了数据的丢失。
+
+为了减少 `false positive` 和数据丢失，`Redis` 建议 `sentinel` 和客户端部署在一起，保证了h `sentinel` 和客户端对 `Redis` 的可用认知是一致的。但一般而言，会将 `Redis` 作为服务提供给用户，`sentinel` 自然
+不能部署在用户侧，通常是一组 `sentinel` 部署在多个机房同时监控成千上百个 `Redis` 实例，多机房(>=3)部署是为了实现机房容灾，保证单个机房挂掉不会影响 `majority` 的 `sentinel`。
 
 ## Cluster
+`Redis` 各模块间耦合度很低，修改少量代码即可增加新的功能，如 `Replication` 是在 `Persistence` 之上实现的，`Redis Cluster` 是在 `Replication` 之上实现的。`Redis Cluster` 增加了 `sharding` 和 `HA` 功能，
+提供了开箱即用的分布式存储。
+
+### Sharding
+`Redis Cluster` 将整个数据空间划分为 `16384` 个 `slots`，使用 `crc16` 将每个 `key` 散列到对应的 `slot` 实现 `sharding`。每个 `master` 节点可以负责 `0~16384` 个 `slot`，但只有有 `slot` 的
+`master` 节点可以参与 `failover` 的投票，为了实现容灾，至少要有 `3` 个。
+
+在集群搭建阶段使用 `CLUSTER ADDSLOTS` 命令给每个 `master` 分配负责的 `slots`，这些信息会同步给其他节点来提供路由功能。当访问不属于该节点负责的 `slot` 时，或者访问的是负责
+该 `slot` 的 `master` 的 `slave` 时(使用 `READONLY` 命令就不会返回)，会返回 `-MOVED` 错误，客户端可以根据这个信息刷新路由表。`Sharding` 会影响操作多个 `key` 的命令和事务，集群模式下只支持所有 `key` 在
+相同 `slot` 的相关命令，因为若是支持跨 `slot`，可能这次都落在同一个节点，但因为 `resharding` 导致之后的执行失败。
+
+当要扩缩容时，就要迁移 `slot`，分为如下几步：
+1. 在目标节点设置 `CLUSTER SETSLOT slot IMPORTING src-node-id`；
+2. 在源节点设置 `CLUSTER SETSLOT slot MIGRATING dst-node-id`；
+3. 在源节点调用 `CLUSTER GETKEYSINSLOT slot count` 获取 `slot` 的 `key`，然后使用 `MIGRATE` 命令迁移到目标节点。
+4. 当 `slot` 中所有 `key` 都迁移完成后，(建议)对集群内所有节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，更新路由信息。
+
+按 `key` 级别进行迁移能够减少阻塞，降低迁移的影响。客户端访问迁移中的 `slot` 会按照特定的协议：
+1. 先访问源节点，若 `key` 存在，则在源节点执行命令，否则返回 `-ASK` 错误。
+2. 在目标节点先执行 `ASKING` 命令，然后执行真正的命令。
+
+这种策略保证了不影响迁移中 `slot` 的正常访问，只是会增加重定向。但是为了简单和一致性，`MIGRATE` 命令是阻塞的，它的执行逻辑如下：
+* 源节点 `dump` `key` 为 `RDB` 格式并使用 `syncio` 发送 `RESTORE-ASKING` 命令给目标节点；
+* 目标节点 `restore` 完成之后返回 `OK`；
+* 源节点接收到目标节点响应后，`MIGRATE` 命令完成。
+
+以上所有操作都是阻塞的，这时候节点无法处理请求，更严重的是无法处理心跳信息，可能会导致 `failover`，这是 `Redis Cluster` 亟需解决的问题，好消息是 `non-blocking migrate` 一直在努力中。
+
+### Gossip
+`Redis Cluster` 各节点间使用端口 `port+10000` 通信，复用处理请求的 `eventloop`，由定时器来触发集群间的交互工作。它是无中心节点的，采用 `Gossip` 协议来实现节点发现、异常检测和更新配置等。
+简单来说，`Gossip` 协议就是各节点周期性向集群内随机一个或几个节点发送消息，经过一定时间后，集群内各节点会对集群的状态达成一致。消息中还会携带自己知晓的部分其他节点的信息，
+其他节点发现自己未知晓的节点就会将它加入集群列表中，从而实现节点的传播。`Redis Cluster` 的实现如下：
+* 各节点每秒随机挑选集群内一个节点发送 `PING` 消息，`PING` 消息中包含该节点的相关信息，同时包括它知晓的集群内 `1/10` 个节点的信息(`Gossip section`)。
+* 接收方返回 `PONG` 响应，`PING` 和 `PONG` 只有类型不同，其余都相同。若发现在附加信息中有未知节点，会进行 `handshake`，完成之后加入集群。
+
+### HA
+`Redis Cluster` 中各节点通过 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免未被挑选发送 `PING` 导致的异常，如果在 `cluster-node-timeout/2` 的时间内
+未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送 `PING`。`Gossip section` 中会携带发送方视角的节点状态，为了加快故障检测的速度， `PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中，
+`PFAIL` 的节点同样是按照 `1/10` 挑选的)，如果在 `2*cluster-node-timeout` 时间范围内 `majority` 的 `master` 节点同时认为一个节点 `PFAIL` 了，就会标记该节点为 `FAIL` 状态，同时广播 `FAIL` 消息强制其他节点标记该节点为 `FAIL`，加快触发 `failover`。
+
+`Redis Cluster` 与 `Redis Sentinel` 类似，同样有顺序递增、在集群内统一的 `current epoch`。`failover` 的区别在于是由 `slave` 触发，当 `slave` 发现自己的 `master` `FAIL` 时，就会给其他节点发起投票请求(`FAILOVER_AUTH_REQUEST`)，
+只有 `slot` 个数不为零的 `master` 节点才能投票，且每个 `epoch` 只能投票一次。当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
+
+为了减少数据丢失，同样要尽量选择较新的 `slave` 成为新的 `master`：
+* 断连太久的 `slave` 不会触发 `failover`，见配置 `cluster-slave-validity-factor`。
+* `slave` 在发送投票请求前会延迟 `500 + random()%500 + rank*1000` 毫秒，根据各 `slave` 的 `replication offset`(`PING` 消息中携带) 计算出 `rank`，
+最新的 `rank` 为 `0`，越老的 `rank` 越大，使得最新的 `slave` 最先发起投票，同时 `random` 能够减少 `split-vote`。
+
+`failover` 同样有超时重试，若 `max(2*cluster-node-timeout, 2000)` 毫秒内未完成就会重试；其他 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票。
+
+比较奇怪的是，`quorum` 是由集群内至少有 `1` 个 `slot` 的 `master` 节点个数决定的，它决定了标记 `FAIL` 和 `failover` 的投票个数。`failover` 投票只能由负责 `slot` 的 `master` 执行，
+但 `FAIL` 状态是由集群内所有的 `master` 标记，这不统一。
+
+### Config epoch
+`Redis Cluster` 除了主从配置，还有 `slots` 配置，主从配置只需要在主从间传递即可，但是 `slots` 配置要在整个集群间传递，这增加了复杂度。`Redis Cluster` 巧妙的将这两种配置统一了起来：
+* `config epoch` 只用于标记节点负责的 `slots`。当某个 `slot` 配置有冲突时，选择 `config epoch` 大的。
+* 当节点发现自己的 `slots` 全部移交给其他节点负责了，就会成为该节点的 `slave`。
+
+`config epoch` 是配置发生变更时的 `current epoch`，且 `config epoch` 不是全局统一的，因为 `slots` 迁移比较频繁、数量又多，
+若要是全局统一的，则每迁移完成一个 `slot` 就要共识一下，代价太大。所以 `config epoch` 仍然是每组 `replicas` 自己维护，当迁移完成时，
+会不需要共识的增加 `config epoch` 来宣布 `slots` 配置的更新(`Redis Cluster` 的实现保证是集群中已知的最大的，因为要保证该节点的 `config epoch` 比原先负责该 `slot` 的节点大)。
+
+`failover` 类似，不过 `failover` 的 `config epoch` 是由 `majority` 的投票产生的，能够确保 `slots` 变更有效。消息中会携带 `config epoch` 和 `slots` 信息宣布自己负责的 `slots`，
+其他节点会根据 `slots` 配置的 `config epoch` 进行更新。如果节点发现自己的 `slots` 配置(`slave` 的配置即它的 `master` 的配置)与消息有冲突，且在更新 `slots` 配置之后，
+自己不再负责 `slots`，就会成为消息发送者的 `slave`，从而实现主从配置变更。
+
+`config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点。好像如果不同 `replicas` 有着相同的 `config epoch` 只要
+负责不同的 `slots` 就不会有什么问题，考虑如下场景，两个节点在迁移 `slots`：
+* 向目标节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，这个命令会使目标节点增加 `config epoch`，但还未同步到源节点。
+* 源节点发生主从切换，`slave` 更新了 `config epoch`，同时获得原先 `master` 的 `slots`。
+* 此时源节点和目标节点都认为该 `slot` 属于自己，并且有可能两个节点的 `config epoch` 是一样的，导致 `slots` 配置出现冲突且无法自动修复。
+
+`Redis Cluster` 为了解决这个问题，要求每个节点的 `config epoch` 都不同，若不同的 `master` 有着相同的 `config epoch` 就会进行冲突解决：
+* `node-id` 小的节点增加 `current epoch` 并设置其 `config epoch`。
+
+这种做法能够保证一段时间后，集群内的 `slots` 配置是统一的，但统一不意味着有效。还是上面的场景，如果源节点的 `node-id` 比目标节点小，就会以源节点的配置为准，但此时该 `slot` 的所有 `key` 都
+已经迁移到目标节点中了，更严重的是，目标节点发现不属于自己的 `slot` 中还有 `key`，会清空 `slot`，导致整个 `slot` 的数据就丢失了。
+
+### slots 相关命令
+如果不理解 `Redis Cluster` 的实现，尤其是 `config epoch`，就会对 `slots` 相关的命令感到困惑。主要有这几个命令：
+* `CLUSTER ADDSLOTS/DELSLOTS`：这两个命令只更新节点负责的 `slots` 配置，不会改变 `config epoch`。如果不关心 `slot` 中的数据，也可用这两个命令 `resharding`：在**所有**节点 `delslots`，在目标节点 `addslots`。
+这是由 `slots` 配置冲突解决的实现决定的，只在源节点 `delslots` 其他节点仍然认为该 `slot` 由源节点负责。
+* `CLUSTER SETSLOT slot IMPORTING/MIGRATING node-id`：这两个命令设置 `slot` 的迁移状态，一定要先在目标节点设置 `MIGRATING`，然后在源节点设置 `IMPORTING`，这是由路由策略决定的。
+* `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责，在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
+
+### Manual Failover
+`Redis Cluster` 的 `Manual failover` 更加可靠，命令格式为：`CLUSTER FAILOVER [FORCE|TAKEOVER]`。完整的流程如下：
+1. `slave` 发送 `MFSTART` 消息给 `master`。
+2. `master` 收到后停止处理客户端命令，并发送最新的 `replication offset` 给 `slave`。
+3. `slave` 的 `replication offset` 与 `master` 一致后，进行 `failover`，流程和 `HA` 中相同，除了不会等待。
+
+当 `master` 挂掉时，完整流程无法执行，需要增加选项：
+* `FORCE` 选项会直接进行第 `3` 步。
+* `TAKEOVER` 选项会直接增加 `config epoch`，不需要 `majority` 的共识，一般用在很极端的场景，比如集群部署在两个机房，其中一个机房挂掉导致无法自动 `failover`。
+
+### 减少数据丢失
+当节点发现 `majority` 的有 `slots` 的 `master` 节点都 `PFAIL|FAIL` 时，就会认为 `CLUSTER_DOWN` 并拒绝读写请求，因为很可能 `majority` 选出了新的 `master`。
+认为 `CLUSTER_DOWN` 的节点(重启的节点默认为 `CLUSTER_DOWN`)重新连上 `majority` 后，会等待一段时间再接收读写请求，目的是等待更新集群配置。
+
+## 总结
+从毕业以来一直在做 `Redis` 相关的工作，也是 `Redis` 带我走进了存储、分布式的大门。`Redis` 的代码写的很通俗易懂，各模块划分清晰，很容易上手进行开发，但一旦涉及到分布式，就有很多细节需要考虑，
+我也不能保证我理解的是正确的。以这篇博客作为总结，`Redis` 的学习就告一段落了，后面会重点学习数据库相关的知识。
