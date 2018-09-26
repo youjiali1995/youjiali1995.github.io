@@ -425,7 +425,7 @@ categories: Redis
 * 当一个 `master` 有 `slots` 但没有 `slave` 时，`slave` 个数最多的 `master` 的 `slave` 就可能会迁移到该节点，详见 `cluster-migration-barrier` 配置。
 * 主从切换时，也相当于是节点迁移。
 
-这里主要讨论第二种，节点迁移的原因是发现自己不再负责 `slots`，这会造成一些奇怪的现象，比如缩容时，在缩容的情况下，当 `master` 的 `slots` 迁移空时，其 `slave` 一定会复制到其他节点上，
+这里主要讨论第二种，节点迁移的原因是发现自己不再负责 `slots`，这会造成一些奇怪的现象，比如缩容时，当 `master` 的 `slots` 迁移空时，其 `slave` 一定会复制到其他节点上，
 而且因为消息的传播顺序，还不能确定复制到哪个节点。如果 `CLUSTER SETSLOT slot NODE dst-node-id` 命令只在目标节点执行未在源节点执行，就连 `master` 也会复制到其他节点。
 
 ### Manual Failover
