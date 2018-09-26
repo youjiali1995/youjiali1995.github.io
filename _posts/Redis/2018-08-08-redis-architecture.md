@@ -341,7 +341,8 @@ categories: Redis
 当要扩缩容时，就要迁移 `slot`，分为如下几步：
 1. 在目标节点设置 `CLUSTER SETSLOT slot IMPORTING src-node-id`；
 2. 在源节点设置 `CLUSTER SETSLOT slot MIGRATING dst-node-id`；
-3. 在源节点调用 `CLUSTER GETKEYSINSLOT slot count` 获取 `slot` 的 `key`，然后使用 `MIGRATE` 命令迁移到目标节点。
+3. 在源节点调用 `CLUSTER GETKEYSINSLOT slot count` 获取 `slot` 的 `key`(`Redis` 使用 `radix-tree` 保存 `slot->key` 的映射，会给每个 `key` 加上 `little-endian` 格式的 `slot` 前缀)，
+然后使用 `MIGRATE` 命令迁移到目标节点。
 4. 当 `slot` 中所有 `key` 都迁移完成后，(建议)对集群内所有节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，更新路由信息。
 
 按 `key` 级别进行迁移能够减少阻塞，降低迁移的影响。客户端访问迁移中的 `slot` 会按照特定的协议：
@@ -368,49 +369,64 @@ categories: Redis
 `PFAIL` 的节点同样是按照 `1/10` 挑选的)，如果在 `2*cluster-node-timeout` 时间范围内 `majority` 的 `master` 节点同时认为一个节点 `PFAIL` 了，就会标记该节点为 `FAIL` 状态，同时广播 `FAIL` 消息强制其他节点标记该节点为 `FAIL`，加快触发 `failover`。
 
 `Redis Cluster` 与 `Redis Sentinel` 类似，同样有顺序递增、在集群内统一的 `current epoch`。`failover` 的区别在于是由 `slave` 触发，当 `slave` 发现自己的 `master` `FAIL` 时，就会给其他节点发起投票请求(`FAILOVER_AUTH_REQUEST`)，
-只有 `slot` 个数不为零的 `master` 节点才能投票，且每个 `epoch` 只能投票一次。当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
+只有 `slot` 个数不为零的 `master` 节点才能投票(后面的 `master` 均指可以投票的)，且每个 `epoch` 只能投票一次。当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
 
 为了减少数据丢失，同样要尽量选择较新的 `slave` 成为新的 `master`：
 * 断连太久的 `slave` 不会触发 `failover`，见配置 `cluster-slave-validity-factor`。
 * `slave` 在发送投票请求前会延迟 `500 + random()%500 + rank*1000` 毫秒，根据各 `slave` 的 `replication offset`(`PING` 消息中携带) 计算出 `rank`，
 最新的 `rank` 为 `0`，越老的 `rank` 越大，使得最新的 `slave` 最先发起投票，同时 `random` 能够减少 `split-vote`。
 
-`failover` 同样有超时重试，若 `max(2*cluster-node-timeout, 2000)` 毫秒内未完成就会重试；其他 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票。
+`failover` 同样有超时重试，若 `max(2*cluster-node-timeout, 2000)` 毫秒内未完成就会重试。每个 `epoch` 只会选出一个 `leader`，这个 `leader` 是集群范围内的，也就是说多个不同 `master` 的 `slave` 同时发起 `failover` 也会
+增加 `split-vote` 的风险，而且每个 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票，若发生了 `split-vote` 会导致恢复很慢。
 
 比较奇怪的是，`quorum` 是由集群内至少有 `1` 个 `slot` 的 `master` 节点个数决定的，它决定了标记 `FAIL` 和 `failover` 的投票个数。`failover` 投票只能由负责 `slot` 的 `master` 执行，
 但 `FAIL` 状态是由集群内所有的 `master` 标记，这不统一。
 
 ### Config epoch
-`Redis Cluster` 除了主从配置，还有 `slots` 配置，主从配置只需要在主从间传递即可，但是 `slots` 配置要在整个集群间传递，这增加了复杂度。`Redis Cluster` 巧妙的将这两种配置统一了起来：
+`Redis Cluster` 和 `Redis Sentinel` 相比除了主从配置，还多了 `slots` 配置，主从配置只需要在主从间传递即可，但是 `slots` 配置要在整个集群间传递，这增加了复杂度。`Redis Cluster` 巧妙的将这两种配置统一了起来：
 * `config epoch` 只用于标记节点负责的 `slots`。当某个 `slot` 配置有冲突时，选择 `config epoch` 大的。
 * 当节点发现自己的 `slots` 全部移交给其他节点负责了，就会成为该节点的 `slave`。
 
 `config epoch` 是配置发生变更时的 `current epoch`，且 `config epoch` 不是全局统一的，因为 `slots` 迁移比较频繁、数量又多，
-若要是全局统一的，则每迁移完成一个 `slot` 就要共识一下，代价太大。所以 `config epoch` 仍然是每组 `replicas` 自己维护，当迁移完成时，
+若要是全局统一的，则每迁移完成一个 `slot` 就要共识一下，代价太大。所以 `config epoch` 是由节点自己维护，当迁移完成时，
 会不需要共识的增加 `config epoch` 来宣布 `slots` 配置的更新(`Redis Cluster` 的实现保证是集群中已知的最大的，因为要保证该节点的 `config epoch` 比原先负责该 `slot` 的节点大)。
 
-`failover` 类似，不过 `failover` 的 `config epoch` 是由 `majority` 的投票产生的，能够确保 `slots` 变更有效。消息中会携带 `config epoch` 和 `slots` 信息宣布自己负责的 `slots`，
+`failover` 的结果就是新的 `master` 负责老 `master` 的所有 `slots`，集群通信消息中会携带自己的 `config epoch` 和负责的 `slots` 信息，
 其他节点会根据 `slots` 配置的 `config epoch` 进行更新。如果节点发现自己的 `slots` 配置(`slave` 的配置即它的 `master` 的配置)与消息有冲突，且在更新 `slots` 配置之后，
 自己不再负责 `slots`，就会成为消息发送者的 `slave`，从而实现主从配置变更。
 
-`config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点。好像如果不同 `replicas` 有着相同的 `config epoch` 只要
-负责不同的 `slots` 就不会有什么问题，考虑如下场景，两个节点在迁移 `slots`：
-* 向目标节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，这个命令会使目标节点增加 `config epoch`，但还未同步到源节点。
+只有集群中 `majority` 的 `master` 共识某节点 `FAIL` 才会触发 `failover`，那为什么 `failover` 仍需要一轮投票呢？目的是确保 `failover` 成功，因为 `failover` 的投票机制保证了 `config epoch` 是共识产生的，
+就能保证新 `master` 的 `config epoch` 是最大的。
+
+### Config epoch 冲突
+`config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点，如果不同的 `master` 负责的 `slots` 不重叠，即使有着相同的 `config epoch` 也
+不会有什么问题，但考虑如下场景，两个节点在迁移 `slots`：
+* 向目标节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，这个命令会使目标节点不需要共识的增加 `config epoch`，但还未同步到源节点。
 * 源节点发生主从切换，`slave` 更新了 `config epoch`，同时获得原先 `master` 的 `slots`。
 * 此时源节点和目标节点都认为该 `slot` 属于自己，并且有可能两个节点的 `config epoch` 是一样的，导致 `slots` 配置出现冲突且无法自动修复。
 
-`Redis Cluster` 为了解决这个问题，要求每个节点的 `config epoch` 都不同，若不同的 `master` 有着相同的 `config epoch` 就会进行冲突解决：
+`Redis Cluster` 为了解决这个问题，要求每个 `master` 的 `config epoch` 都不同，若不同的 `master` 有着相同的 `config epoch` 就会进行冲突解决：
 * `node-id` 小的节点增加 `current epoch` 并设置其 `config epoch`。
 
 这种做法能够保证一段时间后，集群内的 `slots` 配置是统一的，但统一不意味着有效。还是上面的场景，如果源节点的 `node-id` 比目标节点小，就会以源节点的配置为准，但此时该 `slot` 的所有 `key` 都
 已经迁移到目标节点中了，更严重的是，目标节点发现不属于自己的 `slot` 中还有 `key`，会清空 `slot`，导致整个 `slot` 的数据就丢失了。
 
-### slots 相关命令
+### slots 相关操作
 如果不理解 `Redis Cluster` 的实现，尤其是 `config epoch`，就会对 `slots` 相关的命令感到困惑。主要有这几个命令：
 * `CLUSTER ADDSLOTS/DELSLOTS`：这两个命令只更新节点负责的 `slots` 配置，不会改变 `config epoch`。如果不关心 `slot` 中的数据，也可用这两个命令 `resharding`：在**所有**节点 `delslots`，在目标节点 `addslots`。
-这是由 `slots` 配置冲突解决的实现决定的，只在源节点 `delslots` 其他节点仍然认为该 `slot` 由源节点负责。
+这是由 `slots` 配置冲突解决的实现决定的，节点只会将一个 `slot` 转移给 `config epoch` 大的节点，只在源节点 `delslots` 其他节点仍然认为该 `slot` 由源节点负责，直到其他节点宣布它的该 `slot` 负责才会更新配置。
 * `CLUSTER SETSLOT slot IMPORTING/MIGRATING node-id`：这两个命令设置 `slot` 的迁移状态，一定要先在目标节点设置 `MIGRATING`，然后在源节点设置 `IMPORTING`，这是由路由策略决定的。
 * `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责，在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
+
+因为 `slots` 的操作比较复杂，`redis-cli` 中提供了 `cluster` 相关工具来处理。
+
+### 节点 migrate
+`Redis Cluster` 有 `2` 种形式的节点 `migrate`：
+* 当一个 `master` 有 `slots` 但没有 `slave` 时，`slave` 个数最多的 `master` 的 `slave` 就可能会迁移到该节点，详见 `cluster-migration-barrier` 配置。
+* 主从切换时，也相当于是节点迁移。
+
+这里主要讨论第二种，节点迁移的原因是发现自己不再负责 `slots`，这会造成一些奇怪的现象，比如缩容时，在缩容的情况下，当 `master` 的 `slots` 迁移空时，其 `slave` 一定会复制到其他节点上，
+而且因为消息的传播顺序，还不能确定复制到哪个节点。如果 `CLUSTER SETSLOT slot NODE dst-node-id` 命令只在目标节点执行未在源节点执行，就连 `master` 也会复制到其他节点。
 
 ### Manual Failover
 `Redis Cluster` 的 `Manual failover` 更加可靠，命令格式为：`CLUSTER FAILOVER [FORCE|TAKEOVER]`。完整的流程如下：
