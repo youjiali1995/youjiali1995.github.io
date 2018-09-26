@@ -343,7 +343,7 @@ categories: Redis
 2. 在源节点设置 `CLUSTER SETSLOT slot MIGRATING dst-node-id`；
 3. 在源节点调用 `CLUSTER GETKEYSINSLOT slot count` 获取 `slot` 的 `key`(`Redis` 使用 `radix-tree` 保存 `slot->key` 的映射，会给每个 `key` 加上 `little-endian` 格式的 `slot` 前缀)，
 然后使用 `MIGRATE` 命令迁移到目标节点。
-4. 当 `slot` 中所有 `key` 都迁移完成后，(建议)对集群内所有节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，更新路由信息。
+4. 当 `slot` 中所有 `key` 都迁移完成后，(建议)对集群内所有 `master` 设置 `CLUSTER SETSLOT slot NODE dst-node-id`，更新路由信息。
 
 按 `key` 级别进行迁移能够减少阻塞，降低迁移的影响。客户端访问迁移中的 `slot` 会按照特定的协议：
 1. 先访问源节点，若 `key` 存在，则在源节点执行命令，否则返回 `-ASK` 错误。
@@ -402,7 +402,7 @@ categories: Redis
 `config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点，如果不同的 `master` 负责的 `slots` 不重叠，即使有着相同的 `config epoch` 也
 不会有什么问题，但考虑如下场景，两个节点在迁移 `slots`：
 * 向目标节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，这个命令会使目标节点不需要共识的增加 `config epoch`，但还未同步到源节点。
-* 源节点发生主从切换，`slave` 更新了 `config epoch`，同时获得原先 `master` 的 `slots`。
+* 源节点发生主从切换，`slave` 更新了 `config epoch`，同时获得原先 `master` 的 `slots`。(`slots` 迁移状态是 `master` 节点各自维护的，不会进行传播)。
 * 此时源节点和目标节点都认为该 `slot` 属于自己，并且有可能两个节点的 `config epoch` 是一样的，导致 `slots` 配置出现冲突且无法自动修复。
 
 `Redis Cluster` 为了解决这个问题，要求每个 `master` 的 `config epoch` 都不同，若不同的 `master` 有着相同的 `config epoch` 就会进行冲突解决：
