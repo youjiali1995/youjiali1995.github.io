@@ -376,8 +376,9 @@ categories: Redis
 * `slave` 在发送投票请求前会延迟 `500 + random()%500 + rank*1000` 毫秒，根据各 `slave` 的 `replication offset`(`PING` 消息中携带) 计算出 `rank`，
 最新的 `rank` 为 `0`，越老的 `rank` 越大，使得最新的 `slave` 最先发起投票，同时 `random` 能够减少 `split-vote`。
 
-`failover` 同样有超时重试，若 `max(2*cluster-node-timeout, 2000)` 毫秒内未完成就会重试。每个 `epoch` 只会选出一个 `leader`，这个 `leader` 是集群范围内的，也就是说多个不同 `master` 的 `slave` 同时发起 `failover` 也会
-增加 `split-vote` 的风险，而且每个 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票，若发生了 `split-vote` 会导致恢复很慢。
+为了增加 `failover` 的成功率，每个 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票。每个 `epoch` 只会选出一个 `leader`，但是这个 `leader` 是集群范围内的，
+也就是说多个不同 `master` 的 `slave` 同时发起 `failover` 也会增加 `split-vote` 的风险。发生 `split-vote` 会导致 `failover` 恢复很慢，
+因为重试 `failover` 需要 `max(2*cluster-node-timeout, 2000) * 2` 毫秒。
 
 比较奇怪的是，`quorum` 是由集群内至少有 `1` 个 `slot` 的 `master` 节点个数决定的，它决定了标记 `FAIL` 和 `failover` 的投票个数。`failover` 投票只能由负责 `slot` 的 `master` 执行，
 但 `FAIL` 状态是由集群内所有的 `master` 标记，这不统一。
