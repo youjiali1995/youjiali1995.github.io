@@ -410,7 +410,7 @@ categories: Redis
 * `node-id` 小的节点增加 `current epoch` 并设置其 `config epoch`。
 
 这种做法能够保证一段时间后，集群内的 `slots` 配置是统一的，但统一不意味着有效。还是上面的场景，如果源节点的 `node-id` 比目标节点小，就会以源节点的配置为准，但此时该 `slot` 的所有 `key` 都
-已经迁移到目标节点中了，更严重的是，目标节点发现不属于自己的 `slot` 中还有 `key`，会清空 `slot`，导致整个 `slot` 的数据就丢失了。
+已经迁移到目标节点中了，更严重的是，目标节点发现不再属于自己的 `slot` 中还有 `key`，会清空 `slot`，导致整个 `slot` 的数据就丢失了。
 
 ### slots 相关操作
 如果不理解 `Redis Cluster` 的实现，尤其是 `config epoch`，就会对 `slots` 相关的命令感到困惑。主要有这几个命令：
