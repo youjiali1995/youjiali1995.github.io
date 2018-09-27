@@ -396,7 +396,7 @@ categories: Redis
 自己不再负责 `slots`，就会成为消息发送者的 `slave`，从而实现主从配置变更。
 
 只有集群中 `majority` 的 `master` 共识某节点 `FAIL` 才会触发 `failover`，那为什么 `failover` 仍需要一轮投票呢？目的是确保 `failover` 成功，因为 `failover` 的投票机制保证了 `config epoch` 是共识产生的，
-就能保证新 `master` 的 `config epoch` 是最大的。
+就能保证新 `master` 的 `config epoch` 是最大的。而且产生的 `config epoch` 一定是唯一的，能够保证 `last-failover-wins`。
 
 ### Config epoch 冲突
 `config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点，如果不同的 `master` 负责的 `slots` 不重叠，即使有着相同的 `config epoch` 也
