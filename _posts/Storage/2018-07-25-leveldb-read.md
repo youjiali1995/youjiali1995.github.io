@@ -36,17 +36,6 @@ categories: Storage
     * `in_use_`：保存存放在 `cache` 中且被使用到的数据，无特定顺序，只有当没有使用到时(`ref==1`)才会追加到 `lru_` 尾部，保证了是按照 `least-recently used` 而不是
     `least-recently requested` 淘汰。
 
-## Iterator
-`leveldb` 支持对 `db` 的遍历，在其内部也实现了多种 `Iterator` 用于查询、顺序遍历数据，`Iterator` 为上层提供了统一的接口，封装了底层的存储细节。`Iterator` 按功能分为如下几类：
-* `Iterator`：提供最基本的查询数据的能力，用在 `memtable` 的查询、`block` 的查询等。
-* `TwoLevelIterator`：传入一个 `Iterator` 和函数指针，以 `Iterator` 的数据作为参数调用函数生成新的 `Iterator`，相当于传入的是 `Iterator` 的 `Iterator`，用在
-遍历非 `0` 层的 `sstable`、遍历 `sstable` 等。
-* `MergingIterator`：传入多个 `Iterator`，用类似 `merge sort` 的思路，产生有序的结果，用在不同 `level` 间的 `sstable` 遍历等。
-
-`TwoLevelIterator` 和 `MergingIterator` 将基本的 `Iterator` 组合起来，提供了极大的灵活性。以遍历整个 `db` 为例，会将 `memtable Iterator`、`immutable memtable Iterator`、
-`level-0` 的各个 `sstable Iterator`、其他 `level` 的 `ConcatenatingIterator` 组合为 `MergingIterator` 来遍历，需要注意的是，遍历 `db` 时会有许多版本(`sequence`)的 `key`，
-需要返回的是能访问到的最新的版本。
-
 ## Snapshot
 之前也提到过 `leveldb` 支持 `snapshot`：使用 `SnapshotList` 记录所有的 `snapshot`，在 `compaction` 时会保留所有有可能被 `snapshot` 访问到的数据，`ReleaseSnapshot` 就是
 把该 `snapshot` 从 `SnapshotList` 中移除，就不再赘述了。
@@ -62,4 +51,16 @@ categories: Storage
 `Version` 与 `Version` 之间的增量就是 `manifest` 中记录的数据 `VersionEdit`:
 ![image](/assets/images/leveldb/version_edit.png)
 
-`Version` 同样使用引用计数保护，当引用计数为 `0` 时会从 `VersionSet` 中移除，`leveldb` 保证了所有被 `Version` 使用到的 `sstable` 文件不会被删除，从而提供了一致的数据。
+`Version` 同样使用引用计数保护，当引用计数为 `0` 时会从 `VersionSet` 中移除，`leveldb` 保证了所有被 `Version` 使用到的 `sstable` 文件不会被删除，从而提供了一致的数据。当用 `Iterator` 遍历
+整个 `DB` 的数据时，就会增加当前 `Version` 的引用计数。
+
+## Iterator
+`leveldb` 支持对 `db` 的遍历，在其内部也实现了多种 `Iterator` 用于查询、顺序遍历数据，`Iterator` 为上层提供了统一的接口，封装了底层的存储细节。`Iterator` 按功能分为如下几类：
+* `Iterator`：提供最基本的查询数据的能力，用在 `memtable` 的查询、`block` 的查询等。
+* `TwoLevelIterator`：传入一个 `Iterator` 和函数指针，以 `Iterator` 的数据作为参数调用函数生成新的 `Iterator`，相当于传入的是 `Iterator` 的 `Iterator`，用在
+遍历非 `0` 层的 `sstable`、遍历 `sstable` 等。
+* `MergingIterator`：传入多个 `Iterator`，用类似 `merge sort` 的思路，产生有序的结果，用在不同 `level` 间的 `sstable` 遍历等。
+
+`TwoLevelIterator` 和 `MergingIterator` 将基本的 `Iterator` 组合起来，提供了极大的灵活性。以遍历整个 `db` 为例，会将 `memtable Iterator`、`immutable memtable Iterator`、
+`level-0` 的各个 `sstable Iterator`、其他 `level` 的 `ConcatenatingIterator` 组合为 `MergingIterator` 来遍历，需要注意的是，遍历 `db` 时会有许多版本(`sequence`)的 `key`，
+需要返回的是能访问到的最新的版本(若不传入 `snapshot` 则默认 `snapshot` 为当时最新的)。

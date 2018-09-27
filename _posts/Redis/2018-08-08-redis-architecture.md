@@ -352,7 +352,7 @@ categories: Redis
 这种策略保证了不影响迁移中 `slot` 的正常访问，只是会增加重定向。但是为了简单和一致性，`MIGRATE` 命令是阻塞的，它的执行逻辑如下：
 * 源节点 `dump` `key` 为 `RDB` 格式并使用 `syncio` 发送 `RESTORE-ASKING` 命令给目标节点；
 * 目标节点 `restore` 完成之后返回 `OK`；
-* 源节点接收到目标节点响应后，`MIGRATE` 命令完成。
+* 源节点接收到目标节点响应后，删除 `key`，`MIGRATE` 命令完成。
 
 以上所有操作都是阻塞的，这时候节点无法处理请求，更严重的是无法处理心跳信息，可能会导致 `failover`，这是 `Redis Cluster` 亟需解决的问题，好消息是 `non-blocking migrate` 一直在努力中。
 
