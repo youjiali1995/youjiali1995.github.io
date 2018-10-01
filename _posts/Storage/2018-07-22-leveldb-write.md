@@ -332,7 +332,8 @@ SkipList<Key,Comparator>::NewNode(const Key& key, int height) {
 }
 ```
 
-`arena` 的优点我没想出来，难道是为了速度，还是为了更方便的获取 `memtable` 的大小，还是为了释放 `memtable` 的方便？使用 `arena` 带来的另一个问题是，因为 `skiplist` 是线程安全的，所以要保证
+`arena` 的优点我没想出来，难道是为了速度，还是为了更方便的获取 `memtable` 的大小，还是为了释放 `memtable` 的方便？(更新：最近在看《Effective C++》，条款 `50` 中写道：经常一起使用的数据可使用
+ `placement new` 来减少 `page faults`)使用 `arena` 带来的另一个问题是，因为 `skiplist` 是线程安全的，所以要保证
 `arena` 也是线程安全的，`leveldb` 中 `arena` 的实现并不是线程安全的，所以我相信如上面注释所说的，一定有外部同步我没有注意到，或者对可见性理解有错误。  
 
 `lock-free` 编程是个大坑，了解一番之后感觉连基本的多线程编程模式都要怀疑了，需要系统的学习一下。

@@ -323,7 +323,7 @@ categories: Redis
 `majority sentinel` 会 `failover` 出新的 `master`，若是配置了 `min-slaves-to-write` 为 `quorum`，新选举的 `master` 会拒绝写入，原先的 `master` 仍然正常写入，当网络恢复后，会强制让原先的 `master` 复制
 新的 `master` 就导致了数据的丢失。
 
-为了减少 `false positive` 和数据丢失，`Redis` 建议 `sentinel` 和客户端部署在一起，保证了h `sentinel` 和客户端对 `Redis` 的可用认知是一致的。但一般而言，会将 `Redis` 作为服务提供给用户，`sentinel` 自然
+为了减少 `false positive` 和数据丢失，`Redis` 建议 `sentinel` 和客户端部署在一起，保证了 `sentinel` 和客户端对 `Redis` 的可用认知是一致的。但一般而言，会将 `Redis` 作为服务提供给用户，`sentinel` 自然
 不能部署在用户侧，通常是一组 `sentinel` 部署在多个机房同时监控成千上百个 `Redis` 实例，多机房(>=3)部署是为了实现机房容灾，保证单个机房挂掉不会影响 `majority` 的 `sentinel`。
 
 ## Cluster
