@@ -86,8 +86,8 @@ categories: Redis
 * 如果有 `disk` 类型的 `Full Resync` 正在进行，会复用这次 `RDB` 和 `slave` 的信息，避免了下一次 `RDB`。
 * 触发 `socket` 类型 `Full Resync` 时，会等待 `repl-diskless-sync-delay` 秒再进行 `RDB`，为了一次性 `sync` 多个 `slave`。
 
-### 增量同步
-对于 `master` 而言，`slave` 只是特殊的 `client` 而已，`master` 对 `slave` 也是如此。`master` 会把接受到的写命令作为 `slave` 的 `reply` 发送给 `slave`，`slave` 一般会拒绝
+### Async Replication
+对于 `master` 而言，`slave` 只是特殊的 `client` 而已，`master` 对 `slave` 也是如此。`master` 会把执行完成的写命令作为 `slave` 的 `reply` 发送给 `slave`，`slave` 一般会拒绝
 写操作，但会执行 `master` 发过来的，`slave` 也不会发送响应给 `master`。`master` 和 `slave` 之间是 `TCP` 长连接，`Redis` 依赖 `TCP` 的可靠性，认为要么超时、要么报错，否则数据一定会到达 `slave`，
 所以在增量同步的过程中不会对 `slave` 的同步进度进行校验。
 
@@ -99,7 +99,7 @@ categories: Redis
 
 `Redis` 提供的是最终一致性，当 `slave` 和 `master` 的连接断开时，如果设置了 `slave-serve-stale-data`，`slave` 仍然会接收读请求。
 
-### 短暂断连后的同步
+### Partial Resync
 在之前的实现中，当 `master` 和 `slave` 之间的连接出问题时，会重走一遍 `Full Resync` 的流程，既浪费 `CPU` 和网络资源，也没有必要。为了缓解这个问题，
 `Redis` 增加了 `3` 个元素，实现了短暂断连后的部分同步：
 * `Replication ID`
