@@ -128,7 +128,7 @@ categories: Storage
 当 `memtable` 大小超过 `Options.write_buffer_size` 时(默认 4MB)，会在下一次写操作时将当前的 `memtable` 转为 `immutable memtable`，创建新的 `memtable`，并触发
 `immutable memtable` 的 `compaction`。`compaction` 会由单独的线程来执行。
 
-`memtable compaction` 的过程很简单，顺序遍历 `memtable` 将所有的 `key/value` 转储为 `sstable` 格式即可，生成的 `sstable` 不一定在 `level-0`，只要满足上面的保证即可。
+`memtable compaction` 的过程很简单，顺序遍历 `memtable` 将所有的 `key/value` 转储为 `sstable` 格式即可(不会清理无用数据)，生成的 `sstable` 不一定在 `level-0`，只要满足上面的保证即可。
 要注意的是，`leveldb` 为了防止 `sstable` 数量太多会对写操作进行流控：
 * 当 `level-0 sstable` 数量达到 `kL0_SlowdownWritesTrigger(8)` 时，每个写操作会 `sleep(1ms)`。
 * 当前 `memtable` 已满需要 `compaction` 但之前的 `immutable memtable compaction` 还未完成时，会等待之前的完成。

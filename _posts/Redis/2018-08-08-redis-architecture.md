@@ -349,7 +349,11 @@ categories: Redis
 1. 先访问源节点，若 `key` 存在，则在源节点执行命令，否则返回 `-ASK` 错误。
 2. 在目标节点先执行 `ASKING` 命令，然后执行真正的命令。
 
-这种策略保证了不影响迁移中 `slot` 的正常访问，只是会增加重定向。但是为了简单和一致性，`MIGRATE` 命令是阻塞的，它的执行逻辑如下：
+这种策略保证了不影响迁移中 `slot` 的正常访问，只是会增加重定向，但是 `slot` 迁移状态是节点自己保存的，不会同步给其他节点，导致客户端访问迁移节点的 `slave` 时不会正确重定向，这会带来问题：
+* 访问源节点的 `slave` 时发现 `key` 不存在并返回 `null`，其实已经迁移到目标节点了。
+* 访问目标节点的 `slave` 时会重定向到源节点，导致循环重定向。
+
+但是为了简单和一致性，`MIGRATE` 命令是阻塞的，它的执行逻辑如下：
 * 源节点 `dump` `key` 为 `RDB` 格式并使用 `syncio` 发送 `RESTORE-ASKING` 命令给目标节点；
 * 目标节点 `restore` 完成之后返回 `OK`；
 * 源节点接收到目标节点响应后，删除 `key`，`MIGRATE` 命令完成。
@@ -417,7 +421,7 @@ categories: Redis
 * `CLUSTER ADDSLOTS/DELSLOTS`：这两个命令只更新节点负责的 `slots` 配置，不会改变 `config epoch`。如果不关心 `slot` 中的数据，也可用这两个命令 `resharding`：在**所有**节点 `delslots`，在目标节点 `addslots`。
 这是由 `slots` 配置冲突解决的实现决定的，节点只会将一个 `slot` 转移给 `config epoch` 大的节点，只在源节点 `delslots` 其他节点仍然认为该 `slot` 由源节点负责，直到其他节点宣布它的该 `slot` 负责才会更新配置。
 * `CLUSTER SETSLOT slot IMPORTING/MIGRATING node-id`：这两个命令设置 `slot` 的迁移状态，一定要先在目标节点设置 `MIGRATING`，然后在源节点设置 `IMPORTING`，这是由路由策略决定的。
-* `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责，在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
+* `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责并清理 `slot` 迁移状态，在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
 
 因为 `slots` 的操作比较复杂，`redis-cli` 中提供了 `cluster` 相关工具来处理。
 

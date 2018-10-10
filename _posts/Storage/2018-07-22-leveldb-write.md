@@ -337,3 +337,13 @@ SkipList<Key,Comparator>::NewNode(const Key& key, int height) {
 `arena` 也是线程安全的，`leveldb` 中 `arena` 的实现并不是线程安全的，所以我相信如上面注释所说的，一定有外部同步我没有注意到，或者对可见性理解有错误。  
 
 `lock-free` 编程是个大坑，了解一番之后感觉连基本的多线程编程模式都要怀疑了，需要系统的学习一下。
+
+
+*更新(2018-10-10)*:  
+
+临界区主要有这几个作用：
+* 保证只有一个线程能进入，临界区内的操作是原子的。
+* 临界区内的修改是可见的。
+
+我以前一直认为在临界区内的修改才是可见的，这是错误的。可见性是由 `acquire/release` 保证的，`lock` 是 `read-acquire`，`unlock` 是 `write-release`，`unlock` 保证了之前的修改一定对 `lock` 之后可见，包括不在临界区内的。
+这也就是 `leveldb` 的外部同步：`leveldb` 在写 `WAL` 和 `memtable` 时是不持有锁的，但是之前抢占队首和之后通知其他线程时是有 `lock/unlcok` 操作的，在这里保证了可见性。

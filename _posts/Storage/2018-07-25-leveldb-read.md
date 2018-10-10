@@ -40,6 +40,8 @@ categories: Storage
 之前也提到过 `leveldb` 支持 `snapshot`：使用 `SnapshotList` 记录所有的 `snapshot`，在 `compaction` 时会保留所有有可能被 `snapshot` 访问到的数据，`ReleaseSnapshot` 就是
 把该 `snapshot` 从 `SnapshotList` 中移除，就不再赘述了。
 
+`leveldb` 不会持久化 `snapshots`，因为重启时所有 `snapshots` 就无效了。
+
 ## VersionSet
 还有很重要的一环是保证读取数据时的有效性，比如读 `memtable` 时，要保证该 `memtable` 是有效的；使用 `snapshot` 时，要保证对应版本的数据要存在；遍历 `db` 时，要保证提供
 一致的数据。`memtable` 使用引用计数保证了有效性，`compaction` 的实现保证了 `snapshot` 对应的数据不会被清理，而对外提供 `db` 一致的数据就由 `VersionSet` 保证。
@@ -53,6 +55,8 @@ categories: Storage
 
 `Version` 同样使用引用计数保护，当引用计数为 `0` 时会从 `VersionSet` 中移除，`leveldb` 保证了所有被 `Version` 使用到的 `sstable` 文件不会被删除，从而提供了一致的数据。当用 `Iterator` 遍历
 整个 `DB` 的数据时，就会增加当前 `Version` 的引用计数。
+
+重启时会根据 `manifest` 中的 `VersionEdit` 恢复并只保留最新的 `Version`，并清理无用数据。
 
 ## Iterator
 `leveldb` 支持对 `db` 的遍历，在其内部也实现了多种 `Iterator` 用于查询、顺序遍历数据，`Iterator` 为上层提供了统一的接口，封装了底层的存储细节。`Iterator` 按功能分为如下几类：
