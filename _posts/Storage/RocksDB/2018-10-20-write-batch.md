@@ -1,7 +1,7 @@
 ---
 title: RocksDB 源码分析 -- Write Batch
 layout: post
-excerpt: 介绍写操作实现。
+excerpt: 介绍 Write Batch 实现。
 categories: RocksDB
 ---
 
