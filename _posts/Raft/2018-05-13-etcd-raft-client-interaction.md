@@ -11,11 +11,12 @@ categories: Raft
 `Raft` 的目标是实现**线性一致性(Linearizability)**:
 > Each operation appears to take effect atomically at some point between its invocation and completion.
 
-操作不是瞬间完成的，有2个边界：
+操作不是瞬间完成的，从客户端角度看有2个边界：
 * `invocation`: 操作发起的时间；
 * `completion`: 操作完成的时间。
 
-线性一致性要求当一个操作 `complete`，在这之后 `invoke` 的操作要么看到该操作的结果，要么看到更新的状态。对于读操作而言:
+操作会在 `invocation` 和 `completion` 之间某点完成，但操作对其他操作生效的时机对于不同一致性是不同的。线性一致性要求当一个操作 `complete`，在这之后 `invoke` 的操作要么看到该操作的结果，
+要么看到更新的状态。对于读操作而言:
 * 读的结果，必须反映 `invoke` 之前所有已经 `completion` 的结果，或者返回更新的结果；换句话说，会返回在 `invocation` 和 `completion` 之间的某种状态。
 * 不会出现 `non-monotonic read`，之后的读操作要么返回之前返回的值，要么返回更新的值。
 ![image](/assets/images/linearizability-complete-visibility.jpg)

@@ -367,6 +367,9 @@ categories: Redis
 * 各节点每秒随机挑选集群内一个节点发送 `PING` 消息，`PING` 消息中包含该节点的相关信息，同时包括它知晓的集群内 `1/10` 个节点的信息(`Gossip section`)。
 * 接收方返回 `PONG` 响应，`PING` 和 `PONG` 只有类型不同，其余都相同。若发现在附加信息中有未知节点，会进行 `handshake`，完成之后加入集群。
 
+`Redis Cluster` 有多种消息，消息头都是一样的，包含发送方负责的 `slots` 信息、`epoch` 等。`Redis` 序列化消息的方法比较特别: 将消息结构体内的数据都转变为网络字节序后，将整个结构体发送出去，反序列化
+做相反的操作即可，简单粗暴，性能很高，唯一要求是节点所在机器要保持一致。`Gossip` 消息数量和集群节点数成正比，当集群比较大时就会对网络造成较大压力，见 [#3929](https://github.com/antirez/redis/issues/3929)。
+
 ### HA
 `Redis Cluster` 中各节点通过 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免未被挑选发送 `PING` 导致的异常，如果在 `cluster-node-timeout/2` 的时间内
 未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送 `PING`。`Gossip section` 中会携带发送方视角的节点状态，为了加快故障检测的速度， `PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中，
