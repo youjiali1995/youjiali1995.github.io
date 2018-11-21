@@ -26,7 +26,7 @@ categories: RocksDB
 初始时，每个 `Writer` 都是 `STATE_INIT`。`Writer` 添加到队列中来竞争 `leader`:
 * `Writer` 实现为双向链表结点: `Writer* link_older/link_newer`。
 * `WriteThread` 中维护原子变量的链表头，指向最新添加的 `Writer`: `std::atomic<Writer*> newest_writer_`。
-* 采用 `lock-free` 方式将 `Writer` 添加到链表中。
+* 采用 `latch-free` 方式将 `Writer` 添加到链表中。
 ```cpp
 bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
   assert(newest_writer != nullptr);
