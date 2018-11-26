@@ -364,16 +364,19 @@ categories: Redis
 `Redis Cluster` 各节点间使用端口 `port+10000` 通信，复用处理请求的 `eventloop`，由定时器来触发集群间的交互工作。它是无中心节点的，采用 `Gossip` 协议来实现节点发现、异常检测和更新配置等。
 简单来说，`Gossip` 协议就是各节点周期性向集群内随机一个或几个节点发送消息，经过一定时间后，集群内各节点会对集群的状态达成一致。消息中还会携带自己知晓的部分其他节点的信息，
 其他节点发现自己未知晓的节点就会将它加入集群列表中，从而实现节点的传播。`Redis Cluster` 的实现如下：
-* 各节点每秒随机挑选集群内一个节点发送 `PING` 消息，`PING` 消息中包含该节点的相关信息，同时包括它知晓的集群内 `1/10` 个节点的信息(`Gossip section`)。
+* 各节点每秒随机挑选集群内一个节点发送 `PING` 消息，`PING` 消息中包含该节点的相关信息，同时包括它知晓的集群内 `1/10` 个节点的信息，如 `ip`、`port` 和状态等(`Gossip section`)。
 * 接收方返回 `PONG` 响应，`PING` 和 `PONG` 只有类型不同，其余都相同。若发现在附加信息中有未知节点，会进行 `handshake`，完成之后加入集群。
 
 `Redis Cluster` 有多种消息，消息头都是一样的，包含发送方负责的 `slots` 信息、`epoch` 等。`Redis` 序列化消息的方法比较特别: 将消息结构体内的数据都转变为网络字节序后，将整个结构体发送出去，反序列化
 做相反的操作即可，简单粗暴，性能很高，唯一要求是节点所在机器要保持一致。`Gossip` 消息数量和集群节点数成正比，当集群比较大时就会对网络造成较大压力，见 [#3929](https://github.com/antirez/redis/issues/3929)。
 
 ### HA
-`Redis Cluster` 中各节点通过 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免未被挑选发送 `PING` 导致的异常，如果在 `cluster-node-timeout/2` 的时间内
-未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送 `PING`。`Gossip section` 中会携带发送方视角的节点状态，为了加快故障检测的速度， `PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中，
+`Redis Cluster` 中各节点通过 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免因 `Gossip` 未被挑选发送 `PING` 导致的异常，如果在 `cluster-node-timeout/2` 的时间内
+未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送 `PING`。`Gossip section` 中会携带发送方视角的节点状态，为了加快故障检测的速度，`PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中，
 `PFAIL` 的节点同样是按照 `1/10` 挑选的)，如果在 `2*cluster-node-timeout` 时间范围内 `majority` 的 `master` 节点同时认为一个节点 `PFAIL` 了，就会标记该节点为 `FAIL` 状态，同时广播 `FAIL` 消息强制其他节点标记该节点为 `FAIL`，加快触发 `failover`。
+还有 `2` 个值得一提的优化：
+* 如果发送了 `PING` 但超过 `cluster-node-timeout/2` 的时间未收到 `PONG`，会关闭当前连接，重建并发送 `PING`。这是网络编程中很常用的手段，避免因该连接有问题影响后续的操作。
+* `Gossip section` 中还会携带收到节点 `PONG` 的时间，如果集群中没有 `master` 认为它 `PFAIL`，其他节点可以直接根据该值更新自己的 `pong_received`，可以极大减少 `Gossip` 的消息量。
 
 `Redis Cluster` 与 `Redis Sentinel` 类似，同样有顺序递增、在集群内统一的 `current epoch`。`failover` 的区别在于是由 `slave` 触发，当 `slave` 发现自己的 `master` `FAIL` 时，就会给其他节点发起投票请求(`FAILOVER_AUTH_REQUEST`)，
 只有 `slot` 个数不为零的 `master` 节点才能投票(后面的 `master` 均指可以投票的)，且每个 `epoch` 只能投票一次。当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
