@@ -149,8 +149,8 @@ categories: Redis
 
 ### Keepalive
 `master` 和 `slave` 间有保活机制，超时会释放连接:
-* `master` 定期给 `slave` 发送 `PING`。
-* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`，`master` 记录各个 `slave` 的 `repl_ack_time`，同时 `master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
+* `master` 定期给 `slave` 发送 `PING`，保活 `master` 连接。
+* `slave` 定期给 `master` 发送 `REPLCONF ACK offset`，保活 `slave` 连接。`master` 会记录各个 `slave` 的 `Replication Offset`，用于 `WAIT` 命令。
 
 在 `Full Resync` 时，`slave` 会清空数据并加载 `RDB`，可能会阻塞很久。为了防止这时候超时，`slave` 会在清空数据和加载数据时间歇性发送 `\n` 给 `master` 来保活。
 
