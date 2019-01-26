@@ -251,7 +251,8 @@ categories: Redis
 * 排除 `DOWN` 状态、太久没回应 `PING` 或者 `INFO`、与 `master` 断连太久、优先级为 `0` 的 `slave`。优先级使用 `slave-priority` 配置。
 * 在剩下的 `slave` 中按照优先级、`repl_offset`、`runid` 进行排序，优先级越小、`repl_offset` 越大、`runid` 越小则选中机会越大。
 
-挑选出 `slave` 后发送 `SLAVEOF NO ONE` 成为新 `master`，从 `INFO` 中发现 `role` 从 `slave->master` 后，将其他 `slave` 复制到新 `master` 上，从而完成 `failover`。
+挑选出 `slave` 后发送 `SLAVEOF NO ONE` 成为新 `master`，从 `INFO` 中发现 `role` 从 `slave->master` 后，将其他 `slave` 复制到新 `master` 上，从而完成 `failover`。`sentinel` 会通过 `INFO` 定期检测
+每个节点的 `role`，若发现不符合当前配置的会进行调整，如将之前 `ODOWN` 的 `master` 复制到新的 `master`。
 
 ### 异常处理
 写出理想情况下正常工作的代码很容易，要写出在任何环境下都能正常工作的代码就很困难，分布式系统中大部分代码都是为了处理异常情况。首先来看 `leader election` 相关的异常，`Redis Sentinel` 会遇到和 `Raft` 同样的问题，
@@ -278,7 +279,7 @@ categories: Redis
 * 将 `leader election` 和 `failover` 作为一个整体，非 `leader` 的 `failover_timeout` 针对的是 `failover` 完成而不是 `leader election` 完成，若超时会触发选举选出新的 `leader` 即使之前的 `leader` 还存在。
 
 `failover` 完成对于不同状态的 `sentinel` 有不同的含义：
-* 对于 `leader` 而言，要等待所有 `slave` 都复制到新的 `master`。
+* 对于 `leader` 而言，要尽可能让所有 `slave` 都复制到新的 `master` 。
 * 对于非 `leader` 而言，新 `master` 的 `SLAVEOF NO ONE` 完成 `failover` 就完成。当 `leader` 发现挑选的 `slave` 转变为 `master` 后，会通过 `SENTINEL_HELLO_CHANNEL` 发送 `hello` 消息给其他 `sentinel`，消息中包含新 `master` 的地址，
 其他 `sentinel` 收到这个消息时会重置该 `replicas` 的状态，切换到新的 `master` 配置，从而开始监控新的 `master`。
 
@@ -287,16 +288,18 @@ categories: Redis
 * 若多个 `leader` 同时完成 `SLAVEOF NO ONE` 操作，则 `epoch` 最大的胜利(`last failover wins`)，其余 `leader` 中断 `failover`。
 
 `leader` 会记录执行 `failover` 时的 `epoch`，当 `SLAVEOF NO ONE` 操作完成时，会设置对应 `replicas` 的 `config_epoch` 为 `failover_epoch`。通过 `hello` 消息，其余 `sentinel` 会接收到每组 `replicas` 的 `config_epoch`，
-若比自己的大就会中断 `failover`，更新配置。
+若比自己的大就会中断 `failover`，最终所有 `sentinel` 都会以最大的 `config_epoch` 的配置为准，并将主从关系调整为该配置。
 
-若是 `leader` 之间无法通信，但是都能连上 `Redis` 节点，且 `leader` 挑选不同的 `slave` 为新的 `master`，可能导致多个 `leader` 一直执行不同配置的 `failover`。`Redis Sentinel` 很巧妙的解决了这个问题:
+若是 `leader` 之间无法通信，但是都能连上 `Redis` 节点，且 `leader` 挑选不同的 `slave` 为新的 `master`，可能导致多个 `sentinel` 一直执行不同配置的 `failover`。`Redis Sentinel` 很巧妙的解决了这个问题:
 * `sentinel` 通过 `Redis` 节点作为中介通信 `hello` 消息，而不是直接通信。
-* 在这种实现下，`leader` 之间无法通信的情况只能是不同 `leader` 能够连上的 `Redis` 节点之间无重叠，这就回退到了 `Redis Replication` 的 `split brain`，`sentinel` 是无能为力的，`Redis` 会通过配置减少数据丢失。
+* 在这种实现下，`leader` 之间无法通信的情况只能是不同 `leader` 能够连上的 `Redis` 节点之间无重叠，这就回退到了 `Redis Replication` 的 `split brain`，
+`sentinel` 是无能为力的，`Redis` 会通过配置减少数据丢失。当网络恢复后，`sentinel` 会统一配置为 `config_epoch` 大的，并调整主从关系。
 
 `failover` 操作本身就比较复杂，在很多阶段都会发生异常:
 * `leader` 在执行 `failover` 的每个阶段也会有 `failover_timeout` 超时时间，超时会中断 `failover`。`sentinel` 通过超时重新选举能够解决大部分问题，如挑选的 `slave` 挂了、执行 `failover` 的 `sentinel` 挂了。
 * 若是 `failover` 过程中新 `master` 又挂了，会重新选举执行新一轮 `failover`；若老 `master` 恢复了，`failover` 会继续执行。
-* 对于不能立刻复制到新 `master` 的 `slave`，如之前 `ODOWN` 的 `master`，该次 `failover` 的 `leader sentinel` 会一直重试直到成功；其他的 `sentinel` 也会帮助设置，为了处理 `leader sentinel` 挂掉的场景。
+* 有些 `slave` 不能立刻复制到新 `master`，如之前 `ODOWN` 的 `master` 或者网络分区的其他 `slave`。`failover` 的最后阶段会有超时时间，若超时会认为 `failover` 已完成，并更新主从配置。当网络恢复后，
+会在处理 `INFO` 时调整为当前的主从配置。
 
 ### 多组 Replicas
 `sentinel` 会同时监控多组 `replicas`，所以单个 `sentinel` 可能同时成为多组 `replicas` 的 `leader`。`Redis Sentinel` 对于一个 `epoch` 只会有一个 `leader`，但不要求当前的 `leader` 状态一定是 `current_epoch` 的，
@@ -370,46 +373,56 @@ categories: Redis
 `Redis Cluster` 有多种消息，消息头都是一样的，包含发送方负责的 `slots` 信息、`epoch` 等。`Redis` 序列化消息的方法比较特别: 将消息结构体内的数据都转变为网络字节序后，将整个结构体发送出去，反序列化
 做相反的操作即可，简单粗暴，性能很高，唯一要求是节点所在机器要保持一致。`Gossip` 消息数量和集群节点数成正比，当集群比较大时就会对网络造成较大压力，见 [#3929](https://github.com/antirez/redis/issues/3929)。
 
-### HA
-`Redis Cluster` 中各节点通过 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免因 `Gossip` 未被挑选发送 `PING` 导致的异常，如果在 `cluster-node-timeout/2` 的时间内
-未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送 `PING`。`Gossip section` 中会携带发送方视角的节点状态，为了加快故障检测的速度，`PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中，
-`PFAIL` 的节点同样是按照 `1/10` 挑选的)，如果在 `2*cluster-node-timeout` 时间范围内 `majority` 的 `master` 节点同时认为一个节点 `PFAIL` 了，就会标记该节点为 `FAIL` 状态，同时广播 `FAIL` 消息强制其他节点标记该节点为 `FAIL`，加快触发 `failover`。
-还有 `2` 个值得一提的优化：
-* 如果发送了 `PING` 但超过 `cluster-node-timeout/2` 的时间未收到 `PONG`，会关闭当前连接，重建并发送 `PING`。这是网络编程中很常用的手段，避免因该连接有问题影响后续的操作。
+### Failure Detection
+`Redis Cluster` 各节点通过互相发送 `PING` 来发现异常，若超过 `cluster-node-timeout` 未收到 `PONG` 就会标记该节点为 `PFAIL`。为了避免因 `Gossip` 未选中发送 `PING` 导致的异常，
+当节点在 `cluster-node-timeout/2` 的时间内未收到某节点的 `PONG` 且未发送 `PING` 就会强制发送。`Gossip section` 中会携带发送方视角的节点状态，用于判断 `FAIL` 状态，
+为了加快故障检测的速度，`PFAIL` 状态的节点信息一定会添加在 `Gossip section` 中(在最初的实现中， `PFAIL` 的节点同样是按照 `1/10` 挑选的)，
+如果在 `2*cluster-node-timeout` 时间范围内 `majority` 的 `master` 节点同时认为一个节点 `PFAIL` 了，就会标记该节点为 `FAIL` 状态，若该节点是 `master`，则会广播 `FAIL` 消息强制其他节点标记
+它为 `FAIL`，加快触发 `failover`。还有 `2` 个值得一提的优化：
+* 如果发送了 `PING` 但超过 `cluster-node-timeout/2` 的时间未收到 `PONG`，会重建连接并发送 `PING`。这是网络编程中很常用的手段，避免因单个连接的问题误判。
 * `Gossip section` 中还会携带收到节点 `PONG` 的时间，如果集群中没有 `master` 认为它 `PFAIL`，其他节点可以直接根据该值更新自己的 `pong_received`，可以极大减少 `Gossip` 的消息量。
 
-`Redis Cluster` 与 `Redis Sentinel` 类似，同样有顺序递增、在集群内统一的 `current epoch`。`failover` 的区别在于是由 `slave` 触发，当 `slave` 发现自己的 `master` `FAIL` 时，就会给其他节点发起投票请求(`FAILOVER_AUTH_REQUEST`)，
-只有 `slot` 个数不为零的 `master` 节点才能投票(后面的 `master` 均指可以投票的)，且每个 `epoch` 只能投票一次。当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
+### Leader Election
+`Redis Cluster` 与 `Redis Sentinel` 类似，先选出 `leader`，由 `leader` 执行 `failover`，同样有顺序递增、在集群内统一的 `current epoch`，区别在于 `failover` 是由 `slave` 触发，
+当 `slave` 发现自己的 `master` `FAIL` 时，就会给其他节点发起投票请求(`FAILOVER_AUTH_REQUEST`)，只有 `slot` 个数不为零的 `master` 节点才能投票(后面的 `master` 均指可以投票的)，且每个 `epoch` 只能投票一次。
+当收到 `majority` 的 `master` 投票后，该 `slave` 成为新的 `master`。
 
 为了减少数据丢失，同样要尽量选择较新的 `slave` 成为新的 `master`：
 * 断连太久的 `slave` 不会触发 `failover`，见配置 `cluster-slave-validity-factor`。
 * `slave` 在发送投票请求前会延迟 `500 + random()%500 + rank*1000` 毫秒，根据各 `slave` 的 `replication offset`(`PING` 消息中携带) 计算出 `rank`，
-最新的 `rank` 为 `0`，越老的 `rank` 越大，使得最新的 `slave` 最先发起投票，同时 `random` 能够减少 `split-vote`。
-
-为了增加 `failover` 的成功率，每个 `master` 在 `2*cluster-node-timeout` 时间范围内只会对某组 `replicas` 的一个 `slave` 投票。每个 `epoch` 只会选出一个 `leader`，但是这个 `leader` 是集群范围内的，
-也就是说多个不同 `master` 的 `slave` 同时发起 `failover` 也会增加 `split-vote` 的风险。发生 `split-vote` 会导致 `failover` 恢复很慢，
-因为重试 `failover` 需要 `max(2*cluster-node-timeout, 2000) * 2` 毫秒。
+最新的 `rank` 为 `0`，越老的 `rank` 越大，使得最新的 `slave` 最先发起投票，同时 `random` 能够减少 `split vote`。
 
 比较奇怪的是，`quorum` 是由集群内至少有 `1` 个 `slot` 的 `master` 节点个数决定的，它决定了标记 `FAIL` 和 `failover` 的投票个数。`failover` 投票只能由负责 `slot` 的 `master` 执行，
 但 `FAIL` 状态是由集群内所有的 `master` 标记，这不统一。
 
-### Config epoch
-`Redis Cluster` 和 `Redis Sentinel` 相比除了主从配置，还多了 `slots` 配置，主从配置只需要在主从间传递即可，但是 `slots` 配置要在整个集群间传递，这增加了复杂度。`Redis Cluster` 巧妙的将这两种配置统一了起来：
-* `config epoch` 只用于标记节点负责的 `slots`。当某个 `slot` 配置有冲突时，选择 `config epoch` 大的。
-* 当节点发现自己的 `slots` 全部移交给其他节点负责了，就会成为该节点的 `slave`。
+### Split Vote
+每个 `epoch` 只会在集群内选出一个 `leader`，所以所有 `master` 挂掉的 `slave` 都有可能竞争同一 `epoch` 的 `leader`，增大了 `split vote` 的风险，
+而发生 `split vote` 会导致 `failover` 恢复很慢，因为要等待 `max(2*cluster-node-timeout, 2000) * 2` 毫秒才能重新开始选举，若是用默认配置 `15000ms` 的话，发生一次 `split vote` 至少要 `75s` 才能恢复。
 
-`config epoch` 是配置发生变更时的 `current epoch`，且 `config epoch` 不是全局统一的，因为 `slots` 迁移比较频繁、数量又多，
-若要是全局统一的，则每迁移完成一个 `slot` 就要共识一下，代价太大。所以 `config epoch` 是由节点自己维护，当迁移完成时，
-会不需要共识的增加 `config epoch` 来宣布 `slots` 配置的更新(`Redis Cluster` 的实现保证是集群中已知的最大的，因为要保证该节点的 `config epoch` 比原先负责该 `slot` 的节点大)。
+### Multiple Leader
+`Redis Cluster` 也会出现多个不同 `epoch` 的 `leader`，若是同一 `replica` 的话，会最终选择选举成功时 `epoch` 大的 `slave` 为 `master`。
+为了增加 `failover` 的成功率，每个 `master` 在 `2*cluster-node-timeout` 时间范围内只会对一组 `replicas` 中的一个 `slave` 投票，降低同一 `replicas` 有多个 `slave` 在
+不同 `epoch` 同时成为 `leader` 的几率。  
 
-`failover` 的结果就是新的 `master` 负责老 `master` 的所有 `slots`，集群通信消息中会携带自己的 `config epoch` 和负责的 `slots` 信息，
+多个 `leader` 的好处是可以加快不同 `replica` 的恢复，因为不同 `replica` 间的 `failover` 互不影响。
+
+### Slots Config
+`Redis Cluster` 除了主从配置，还多了 `slots` 配置，主从配置只需要在主从间传递即可，但 `slots` 配置要在整个集群间统一，这增加了复杂度。`Redis Cluster` 巧妙的将这两种配置统一了起来：
+* 只有 `slots` 配置，用于标记 `slot` 的拥有者。
+* 没有主从配置，当节点更新 `slots` 配置后发现自己不再负责 `slot`，就会变为 `slave`，完成主从切换。
+
+`slots` 配置由 `config epoch` 来更新，`config epoch` 即 `slots` 配置变更时的 `current epoch`，当 `slots` 配置有冲突时，会选择 `config epoch` 大的。`failover` 的
+结果就是 `leader` 负责老 `master` 的所有 `slots` 并更新 `config epoch`，集群通信消息中会携带自己的 `config epoch` 和负责的 `slots` 信息，
 其他节点会根据 `slots` 配置的 `config epoch` 进行更新。如果节点发现自己的 `slots` 配置(`slave` 的配置即它的 `master` 的配置)与消息有冲突，且在更新 `slots` 配置之后，
-自己不再负责 `slots`，就会成为消息发送者的 `slave`，从而实现主从配置变更。
-
-只有集群中 `majority` 的 `master` 共识某节点 `FAIL` 才会触发 `failover`，那为什么 `failover` 仍需要一轮投票呢？目的是确保 `failover` 成功，因为 `failover` 的投票机制保证了 `config epoch` 是共识产生的，
-就能保证新 `master` 的 `config epoch` 是最大的。而且产生的 `config epoch` 一定是唯一的，能够保证 `last-failover-wins`。
+自己不再负责 `slots`，就会成为消息发送者的 `slave`，从而实现主从配置变更。同一 `replica` 多个 `slave` 成为 `leader` 的话，会最终选择 `config epoch` 大的为新 `master`。
 
 ### Config epoch 冲突
+`failover` 需要一轮投票，除了用于选出 `leader`，还能够保证 `leader` 的 `config epoch` 是唯一的。
+
+`slots` 会发生迁移，除了要将数据迁到目标节点，目标节点还要更新 `slots` 配置，但 `slots` 很多，若每迁移完成一个 `slot` 就要集群共识产生唯一的 `config epoch` 的话，代价就太大了，
+所以在迁移时 `config epoch` 是节点自己维护，当迁移完成时，会不需要共识的增加 `current epoch` 和 `config epoch` 来宣布 `slots` 配置的更新
+(`Redis Cluster` 的实现保证是集群中已知的最大的，不一定会增加，因为只要保证该节点的 `config epoch` 比原先负责该 `slot` 的节点大)。
+
 `config epoch` 是用来解决单个 `slot` 的配置冲突的，需要保证单个 `slot` 在特定的 `config epoch` 只属于一个节点，如果不同的 `master` 负责的 `slots` 不重叠，即使有着相同的 `config epoch` 也
 不会有什么问题，但考虑如下场景，两个节点在迁移 `slots`：
 * 向目标节点设置 `CLUSTER SETSLOT slot NODE dst-node-id`，这个命令会使目标节点不需要共识的增加 `config epoch`，但还未同步到源节点。
@@ -427,9 +440,10 @@ categories: Redis
 * `CLUSTER ADDSLOTS/DELSLOTS`：这两个命令只更新节点负责的 `slots` 配置，不会改变 `config epoch`。如果不关心 `slot` 中的数据，也可用这两个命令 `resharding`：在**所有**节点 `delslots`，在目标节点 `addslots`。
 这是由 `slots` 配置冲突解决的实现决定的，节点只会将一个 `slot` 转移给 `config epoch` 大的节点，只在源节点 `delslots` 其他节点仍然认为该 `slot` 由源节点负责，直到其他节点宣布它的该 `slot` 负责才会更新配置。
 * `CLUSTER SETSLOT slot IMPORTING/MIGRATING node-id`：这两个命令设置 `slot` 的迁移状态，一定要先在目标节点设置 `MIGRATING`，然后在源节点设置 `IMPORTING`，这是由路由策略决定的。
-* `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责并清理 `slot` 迁移状态，在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
+* `CLUSTER SETSLOT slot NODE node-id`：这个命令在不同的节点使用有不同的效果，除了会设置该 `slot` 由 `node-id` 对应节点负责并清理 `slot` 迁移状态，
+在目标节点使用还会更新 `config epoch`，所以要保证目标节点的调用一定成功。
 
-因为 `slots` 的操作比较复杂，`redis-cli` 中提供了 `cluster` 相关工具来处理。
+要尽量保证 `slots` 迁移时不要发生主从切换，否则会有丢数据的风险，甚至整个 `slot` 的数据都会丢失。
 
 ### 节点 migrate
 `Redis Cluster` 有 `2` 种形式的节点 `migrate`：
@@ -452,6 +466,12 @@ categories: Redis
 ### 减少数据丢失
 当节点发现 `majority` 的有 `slots` 的 `master` 节点都 `PFAIL|FAIL` 时，就会认为 `CLUSTER_DOWN` 并拒绝读写请求，因为很可能 `majority` 选出了新的 `master`。
 认为 `CLUSTER_DOWN` 的节点(重启的节点默认为 `CLUSTER_DOWN`)重新连上 `majority` 后，会等待一段时间再接收读写请求，目的是等待更新集群配置。
+
+## 从 Raft 角度看 Sentinel/Cluster
+`Sentinel/Cluster` 和 `Raft` 部分实现有些相似：
+* `leader election` 是完全一样的。
+* `Sentinel` 的主从配置、`Cluster` 的 `slots` 配置就相当于是 `log`，只有新选举的 `leader` 才会产生 `log`。
+* `log` 是通过 `Gossip` 协议下发的，节点收到 `log` 会立刻 `apply` 不需要 `commit`，`log` 也不需要顺序 `apply`，只要 `epoch` 比自己大即可。
 
 ## 总结
 从毕业以来一直在做 `Redis` 相关的工作，也是 `Redis` 带我走进了存储、分布式的大门。`Redis` 的代码写的很通俗易懂，各模块划分清晰，很容易上手进行开发，但一旦涉及到分布式，就有很多细节需要考虑，
