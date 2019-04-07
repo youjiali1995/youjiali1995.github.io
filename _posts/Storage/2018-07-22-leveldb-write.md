@@ -297,14 +297,15 @@ void SkipList<Key,Comparator>::Insert(const Key& key) {
 * 观察不到新插入的结点。
 * 在某一层观察到新插入的结点，且更低层也会观察到，也就是完好的 `skiplist`。
 
-当读写同时发生时，上述两种情况都有可能发生，但都不会影响正确的结果，因为不会查找正在插入的 `key`。而当写之后再读刚写入的 `key` 时，因为写已经完成，所以一定会观察到新插入的 `key`。
-还需要注意一点，`max_height_` 只保证了原子性，没有保证对 `max_height_` 可见性，也没有保证对 `next_[]` 的可见性，但都不会影响读的结果。假设插入增大了 `max_height_`:
+当读写同时发生时，上述两种情况都有可能发生，但都不会影响正确的结果，因为不会查找正在插入的 `key`(`Sequence` 只有写操作完成才会更新)。
+需要注意一点，`max_height_` 只保证了原子性，没有保证对 `max_height_` 可见性，也没有保证对 `next_[]` 的可见性，但都不会影响读的结果。假设插入增大了 `max_height_`:
 * 读操作观察到了 `max_height_` 的更新，对应上面两种情况分别是:
     * 新增的 `level` 的 `head_` 都指向 `NULL`，`leveldb` 保证了 `skiplist` 中 `NULL` 是最大的，所以会立刻向下层查找。
     * 在某一层观察到了新插入的 `key`，继续遍历。
 * 读操作未观察到 `max_height_` 的更新，直接从低层开始遍历不影响 `skiplist` 的查找。
 
-写之后写我个人觉得有点问题，写操作使用了查找操作来获取需要设置的 `prev` 结点，但是遍历的时候不能保证获取到最新的 `max_height_`，所以设置 `prev[]` 时高层会有问题。但是注释写到插入操作时有外部同步：
+而当写之后再读刚写入的 `key` 时，因为写已经完成，一定会观察到新插入的 `key`。写之后写我个人觉得有点问题，写操作使用了查找操作来获取需要设置的 `prev` 结点，但是遍历的时候不能保证获取到最新的 `max_height_`，
+所以设置 `prev[]` 时高层会有问题。但是注释写到插入操作时有外部同步：
 > TODO(opt): We can use a barrier-free variant of FindGreaterOrEqual() here since Insert() is externally synchronized.
 
 我没找到外部同步，但如果有外部同步的话，就确保了插入操作一定能观察到最新的 `max_height_` 和 `node`，可以保证写操作的安全。
@@ -338,11 +339,11 @@ SkipList<Key,Comparator>::NewNode(const Key& key, int height) {
 `lock-free` 编程是个大坑，了解一番之后感觉连基本的多线程编程模式都要怀疑了，需要系统的学习一下。
 
 
-*更新(2018-10-10)*:  
+> 更新(2018-10-10)
 
 临界区主要有这几个作用：
 * 保证只有一个线程能进入，临界区内的操作是原子的。
 * 临界区内的修改是可见的。
 
 我以前一直认为在临界区内的修改才是可见的，这是错误的。可见性是由 `acquire/release` 保证的，`lock` 是 `read-acquire`，`unlock` 是 `write-release`，`unlock` 保证了之前的修改一定对 `lock` 之后可见，包括不在临界区内的。
-这也就是 `leveldb` 的外部同步：`leveldb` 在写 `WAL` 和 `memtable` 时是不持有锁的，但是之前抢占队首和之后通知其他线程时是有 `lock/unlcok` 操作的，在这里保证了可见性。
+这也就是 `leveldb` 的外部同步：`leveldb` 在写 `WAL` 和 `memtable` 时是不持有锁的，但是之前抢占队首和之后通知其他线程时是有 `lock/unlcok` 操作的，读的时候也要 `lock` 获取 `Sequence`, 在这里保证了可见性。
