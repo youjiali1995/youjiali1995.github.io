@@ -21,7 +21,8 @@ mathjax: true
 > To reduce contention during reads of the memtable, we make each memtable row copy-on-write and allow reads and writes to proceed in parallel.
 
 *Bigtable* 支持的是单行事务，对单行事务的操作是原子的，也就是单行的 *Serializable*：
-> Every read or write of data under a single row key is atomic (regardless of the number of different columns being read or written in the row).
+> Every read or write of data under a single row key is atomic (regardless of the number of different columns being read or written in the row).  
+> Bigtable supports single-row transactions, which can be used to perform atomic read-modify-write sequences on data stored under a single row key.
 
 ## Snapshot Isolation
 *SI* 一般是通过 *MVCC* 实现的，但是对 *SI* 的定义和要提供的功能不同，实现方式也不同：
