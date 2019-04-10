@@ -8,8 +8,8 @@ mathjax: true
 
 {% include toc %}
 
-*Percolator* 是在 *Bigtable* 的单行事务的基础上实现的支持跨行、*Snapshot Isolation* 的分布式事务。原子性仍是由 *2PC* 保证，不过事务的所有状态都保存在 *Bigtable* 中，由 *Bigtable* 提供高可用和一致性，
-客户端只实现事务的逻辑，所以任何客户端都可以认为是 *Coordinator*，解决了传统 *2PC* 中 *Coordinator* 挂掉可能需要人为 *rollback/roll forward* 的问题。
+*Percolator* 是在 *Bigtable* 的单行事务的基础上实现的支持跨行、*Snapshot Isolation* 的分布式事务。原子性仍是由 *2PC* 保证，事务的所有状态都保存在 *Bigtable* 中，由 *Bigtable* 提供高可用和一致性，
+解决了 *2PC* 中若 *Coordinator* 不支持高可用可能需要人为 *rollback/roll forward* 的问题。事务的逻辑在客户端中实现，所以任何客户端都可以认为是 *Coordinator*，且不需要侵入系统来实现 *2PC* 的逻辑。
 
 ## Bigtable
 *Bigtable* 通过 $$ \{row, column, timestamp\} $$ 确定一个 *cell*：
