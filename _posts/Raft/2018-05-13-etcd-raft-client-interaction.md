@@ -206,6 +206,8 @@ func stepFollower(r *raft, m pb.Message) error {
 * 在 `lease` 期限的读请求不用和其他节点通信，直接认为当前 `leadership` 是有效的，只是绕过了 `heartbeat` 来确认 `leadetship` 有效性，其余的处理和 `ReadIndex` 相同。
 * 要注意 `leadership transfer` 会导致新 `leader` 更早的产生，需要终止 `lease`。
 
+这种机制只能保证收到了 `heartbeat` 的节点不会发起选举，但是未收到的节点仍有可能超时成为新的 `leader`。为了防止这些节点成为新的 `leader` 要同时开启 `check quorum` 才行，`raft-thesis` 中没提到这点。
+
 #### etcd/raft 实现
 流程和 `ReadIndex` 类似，只是少了 `heartbeat` 的过程:
 * 直接返回 `ReadState`:
@@ -224,6 +226,6 @@ case ReadOnlyLeaseBased:
     }
 ```
 
-* `lease` 通过之前提到的 [check quorum](http://localhost:4000/raft/etcd-raft-leader-election/#check-quorum) 实现，没有用 `heartbeat` 来更新 `lease`，只要接收到节点 `resp` 就认为节点是活跃的，
+* `lease` 通过之前提到的 [check quorum](/raft/etcd-raft-leader-election/#check-quorum) 实现，没有用 `heartbeat` 来更新 `lease`，只要接收到节点 `resp` 就认为节点是活跃的，
 每 `election timeout` 检查一次 `lease`，并维持 `lease` 到下一个 `election timeout`。
 * 不过 `leadership transfer` 并没有终止 `lease`。
