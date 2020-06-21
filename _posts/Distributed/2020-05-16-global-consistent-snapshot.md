@@ -97,6 +97,7 @@ CRDB 的事务非常值得学习，它使用 Hybrid Logical Clock 来实现去�
 CRDB 各节点维护 HLC，在有事务请求时会更新 HLC，数据同样使用 MVCC，由 TS<sub>commit</sub> 标记。事务开始时在本地获取临时的 TS<sub>commit</sub>，在执行过程中可能因为某些原因被往前推，比如：
 
 * 要修改的 key 被其他 TS 更大的事务读过了，则当前事务的 TS<sub>commit</sub> 一定要大于 TS<sub>maxRead</sub>。
+* 要修改的 key 有更新的版本，则当前事务的 TS<sub>commit</sub> 一定要大于最新的版本。
 * 写下的 write intent 被其他 TS 更大且优先级更高的事务读到了，为了避免阻塞，会往前推写事务的 TS<sub>commit</sub>。
 
 CRDB 实现的是 SSI，要求事务等价于在某一点瞬间执行完成，但事务执行总有过程，比如从 TS<sub>start</sub> 到 TS<sub>commit</sub>，CRDB 在提交时会检查之前读的数据在 [TS<sub>start</sub>, TS<sub>commit</sub>) 间是否有修改，没有的话说明把 TS<sub>start</sub> 提升到 TS<sub>commit</sub> 也会得到相同的结果，所以可以认为事务是在 TS<sub>commit</sub> 这一点执行的，满足 serializable。所以 TS<sub>commit</sub> 被往前推的话可能导致事务提交失败，需要重启。
