@@ -9,7 +9,15 @@ categories: Reading
 
 ## 2020
 
-### 04-06 | Calvin: Fast Distributed Transactions for Partitioned Database Systems | 5☆
+### 06-21 | *CockroachDB: The Resilient Geo-Distributed SQL Database* | 6☆
+
+真的是巧，今年 TiDB 和 CRDB 都发了论文。不过友商的这篇论文只能打个6星（我们的论文也打不了高星😂），因为篇幅有限，还想要面面俱到就只能各部分浅显的介绍一点，不如他们官方文档和博客写的详细和有深度。强烈推荐他们的文档和博客，非常全面和易读，不管是从技术方面还是写作方面都值得学习。
+
+### 05-12 | *Clock-SI: Snapshot Isolation for Partitioned Data Stores Using Loosely Synchronized Clocks* | 7☆
+
+见 [Clock SI](/distributed/global-consistent-snapshot/#clock-si)。
+
+### 04-06 | *Calvin: Fast Distributed Transactions for Partitioned Database Systems* | 5☆
 
 这篇论文说实话没太看懂，给我的感觉是实现了非常特殊的状态机，状态机的输入是事务操作，所以只要用 paxos 之类的协议提交输入后事务状态就确定了，不需要走如 2PC 之类的 distributed commit protocol。
 
@@ -21,13 +29,13 @@ Calvin 是在单机存储之上实现的，数据分布在不同的 partition，
 
 论文的目标就是为了避免 2PC，因为在 2PC 过程中持有的锁不能释放，这会严重影响数据库的吞吐。采用 2PC 或者说锁不能执行完就释放的原因是不知道其他节点是否能成功执行，失败的原因有机器宕掉、违反事务隔离级别导致 abort 掉等。机器宕掉不应该导致 2PC 失败，搞成多副本高可用就能解决，但事务自己 abort 掉那就无法控制了，除非能提前知道其他节点执行的结果。现在的分布式数据库大都是按照 partition 来复制数据和执行请求，各个 partition 的执行结果互不知道，所以就需要 2PC，锁的存在时间也比较长：复制的耗时 + 2PC 耗时。Calvin 的思考角度不太一样，数据还是划分为 partition，也是按 partition 来复制，但复制的 transaction inputs 是面向所有 partition 的，所有 partition 的单个副本构成了状态机。使用确定性的 lock 算法保证了相同的输入能得到相同的状态，这样当 transaction inputs 提交后，每个 replica 就可以自己执行了，可以最小化锁的存在时间（没有复制和 2PC 的耗时），所有 replica 最终都会是相同的状态。
 
-### 04-06 | An Empirical Evaluation of In-Memory Multi-Version Concurrency Control | 5☆
+### 04-06 | *An Empirical Evaluation of In-Memory Multi-Version Concurrency Control* | 5☆
 
 又是一篇在自研平台(Peloton)比较各种 MVCC 实现的论文，比较了 concurrency control、version storage、GC 和 index 的不同实现在不同 workload 下的性能，实现是基于纯内存数据库（越来越多的论文侧重于纯内存数据库了，毕竟硬件越来越牛逼），感觉还是什么都没说。。
 
 现在大多数数据库都用了 MVCC，这部分的实现特别影响数据库的性能，尤其是 TiDB 这种基于 RocksDB 的 LSM-tree 的，scan 要做归并排序，如果版本特别多的话要跳过很多版本才能找到下一个有效数据，GC 来不及的话就会特别影响性能。TiKV 为了减少版本过多的影响，当 next 几次还没找到需要的数据时，会用 seek，很粗暴，效果也不好说。
 
-### 04-06 | An Evaluation of Distributed Concurrency Control | 3☆
+### 04-06 | *An Evaluation of Distributed Concurrency Control* | 3☆
 
 论文基于自研的平台比较了 6 种 serializable 级别的 distributed concurrency control 在典型 OLTP workload 场景下的性能，分别从读写比例、冲突程度、分布式事务涉及的 partition 数量、网络延迟等方面来比较，结论是都不太行，但是这几种协议都是自己实现的，肯定有很多可优化的地方，比较的结果不太准确。提出的解决办法有：1. 用 RDMA 之类的降低网络延迟，但对于跨数据中心场景没有办法；2. 更优的 data partition 策略，尽量将分布式事务变成单机事务；3. 使用更低的隔离级别。怎么说了和没说一样。。
 
@@ -39,6 +47,6 @@ HLC 算法很简单，就是在 physical clock 基础上使用了 logical clock 
 
 论文讨论了时间、时钟、事件顺序之间的关系。无法简单的用时间、时钟来确定分布式系统中事件的顺序，不同进程间的事件顺序要靠消息通信来确定，但也只能做到偏序或者说部分全序，因为不相交的事件不需要通信，也就无需确定顺序。若想要实现整个系统的全序对物理时钟有更严格的要求。
 
-### 03-14 | *Database Internals* | 7☆
+### 03-14 | *Database Internals* | 6☆
 
 挺新的书，花了 2 周时间过了一遍，尴尬的是大部分我都懂，我不了解的看了也还是不了解。这本书更多的讲述的是「术」而不是「道」，介绍了很多问题的多种解决办法，相对而言还是更推荐 *DDIA*。不过这本书可以当 CMU15-445 的参考资料，第一部分几乎全覆盖了。
