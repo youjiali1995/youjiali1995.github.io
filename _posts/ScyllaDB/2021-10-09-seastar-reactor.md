@@ -161,7 +161,7 @@ public:
 * `epoll`：`readable()` 就是设置 `events_requested |= EPOLLIN `，用 `epoll_ctl()` 注册 LT + `EPOLLIN`。`seastar` 没用 oneshot，虽然这会更通用，但会增加 `epoll_ctl()` 的调用次数，它用别的方式也达到了同样的效果：在 `epoll_wait()` 返回第一次事件就绪时不会清理掉注册的事件，但会清理 `events_requested`，当下一次 `epoll_wait()` 再返回了该事件就绪时发现 `events_requested` 里没有对应事件再用 `epoll_ctl()` 删掉，效果就是当一直对某事件感兴趣时，比如一直调用 `readable()`， 也只会有一次 `epoll_ctl()` 调用，当不再感兴趣时也只会多一次 `epoll_wait()` 的唤醒。
 * AIO：AIO 只有 oneshot 模式，它的 `readable()` 就只是准备好 `iocb`，在 `kernel_submit_work()` 里再一次性 `io_submit()`，这是 AIO 能减少 syscall 的一个原因：它支持 batch，而 `epoll_ctl()` 一次只能操作一个 fd。
 
-说完了事件是如何处理的，就到了如何调用 callback 了。event loop 实现一般都是在 `epoll_event.data.ptr` 或者 `iocb.aio_data` 里保存 socket 对应类的指针，类里会有 callback，事件就绪时就调用对应的 callback，`seastar` 也是这样实现的，不过它的 callback 是完成 `promise`。`readable()` 返回的是 `future` 用 `then()` 就能串起来 callback，典型的用法就是 `_backend->readable(fd).then(() { fd.read()... })`，这极大的改善了开发体验。
+说完了事件是如何处理的，就到了如何调用 callback 了。event loop 实现一般都是在 `epoll_event.data.ptr` 或者 `iocb.aio_data` 里保存 socket 对应类的指针，类里会有 callback，事件就绪时就调用对应的 callback，`seastar` 也是这样实现的，不过它的 callback 是完成 `promise`。`readable()` 返回的是 `future` 用 `then()` 就能串起来 callback，典型的用法就是 `_backend->readable(fd).then([&fd] { fd.read()... })`，这极大的改善了开发体验。
 
 ## 总结
 
