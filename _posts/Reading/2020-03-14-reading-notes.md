@@ -9,6 +9,21 @@ categories: Reading
 
 ## 2021
 
+### 12-19 | *KVell: the Design and Implementation of a Fast Persistent Key-Value Store* | 8☆
+
+
+
+### 12-19 | *SpanDB: A Fast, Cost-Effective LSM-tree Based KV Store on Hybrid Storage* | 6☆
+
+SpanDB 在 RocksDB 基础上做了这几个事情：
+
+1. 使用 SPDK + 异步流程 + 并行写 WAL 来优化 RocksDB 写 WAL 的性能。RocksDB 写 WAL 在高速盘上会成为瓶颈（我觉得）应该是共识了，因为它是单线程串行写而且还有 write group 同步的开销，会导致无法充分利用高速盘，论文里也提到了用 Optane P4800X 只比 SATA SSD 提升了 23.58%。OLTP 系统想要充分利用高速盘，高的 I/O depth 是必不可少的，所以需要用纯异步来增加盘的压力、并行写 WAL 来增加 I/O depth，这里 SPDK 和异步流程就不介绍了，感兴趣的看论文吧，个人感觉即使不用 SPDK 只用 async I/O 也能达到类似的优化效果，这里只重点介绍一下并行写 WAL。SpanDB 预先给每个 memtable 划分好 WAL 空间，WAL 空间又划分为固定 4KB 大小的 page，并行的写 WAL 请求会被分配不重叠的、连续的 page 从而支持并行写，recovery 通过 metadata page 里记录的每个 memtable 的 WAL 信息和 WAL page 的 LTN 来确定需要回放的 page。![wal](/assets/images/notes/spandb-wal.png)
+2. 为了降低存储成本，只有 WAL 和前几层的 SST 在 SD（speed disk，也就是 NVMe SSD）上，更高层的会放在 CD（capacity disks，SATA SSD 之类的）上，还会根据 SD 和 CD 的压力情况动态调整新 SST 的存放位置。
+3. 有一定的自适应策略来避免 SD 压力饱和导致影响写 WAL 延迟、减轻 compaction 对 WAL 的影响，但都是非常基础的策略。
+
+取得的效果还是不错的，ycsb 测试全面提升，纯写场景 8 倍吞吐且延迟更低，但这篇文章没什么新意，唯一的优点是好落地，类似的优化在工业界应该不少。讲道理这篇文章能中顶会（FAST 2021）我是比较惊讶的，`seastar` 在 2015 年就把最佳实践告诉了世界，但是 2021 年了真正用上的系统还是没多少，而且提供异步接口的存储引擎适用型并不好，异步更适合在统一的框架下执行，而不是内置异步 runtime。
+
+
 ### 01-01 | *Tales of the Tail: Hardware, OS, and Application-level Sources of Tail Latency* | 10☆
 
 非常好的一篇论文，涨了不少见识，但想要从中学到很多的话需要自己实践才行。论文研究 tail latency，首先用 queuing theory 计算出特定模型下的理论延迟分布，然后用不同架构的应用测出实际的延迟分布，分析理论和实际的差距并逐一解决，最终得到了近似最优的延迟分布。
@@ -20,20 +35,20 @@ categories: Reading
 - 降低系统使用率：即使请求到达速率的分布不变，但请求到达的数量变少了，排队也就变少了。
 - 增加 worker 数量：即使在相同使用率情况下，worker 越多能容忍的 burst 也就越大。这里有个陷阱就是一定要是 single queue 的系统，如果每个 worker 单独一个 queue，这等价于多个 single queue 系统，延迟分布不会随着 worker 增加而改善，当然吞吐是会增加的。
 
-另外一个影响 tail latency 分布的因素是请求处理策略或者叫调度，`FIFO` 有着最好的 tail latency，而 `LIFO` 有着更好的 `median latency`。
+另外一个影响 tail latency 分布的因素是请求处理策略或者叫调度，FIFO 有着最好的 tail latency，而 LIFO 有着更好的 median latency。
 
 论文里测试了 3 类系统，对应了 3 种模型，包括：
 
 1. 来一个连接建一个线程来处理的 `Null RPC server`。
-2. `Memcached`：线程数量固定，但分为 `TCP` 和 `UDP` 模式。`TCP` 模式下连接被 partition 到特定线程处理，`UDP` 模式下每个线程都从相同的 `UDP` 套接字里接受请求来处理，操作系统保证了请求的 `FIFO`。
+2. `Memcached`：线程数量固定，但分为 TCP 和 UDP 模式。TCP 模式下连接被 partition 到特定线程处理，UDP 模式下每个线程都从相同的 UDP 套接字里接受请求来处理，操作系统保证了请求的 FIFO。
 3. `Nginx`：固定进程数量的 event loop，每个连接也是固定单个线程处理的。
 
-为了分析延迟的来源，论文的做法是给每个请求从 `NIC` 层就开始记录处理时间。这 3 种系统实际的延迟分布和理论差距都很大，但受不同的因素影响，包括：
+为了分析延迟的来源，论文的做法是给每个请求从 NIC 层就开始记录处理时间。这 3 种系统实际的延迟分布和理论差距都很大，但受不同的因素影响，包括：
 
-- background process：操作系统本身就有一些进程在运行，这些进程会占用应用的 CPU 时间。在默认的 `CFS` 调度下，即使提升了应用进程的优先级，其他进程的影响还是很大，因为 `CFS` 调度只是给高优先级进程更多的时间片，无法抢占其他进程，也无法完全消除其他进程的影响。而使用 `realtime` 调度能几乎消除掉其他进程的影响，因为它支持抢占。
-- Non-FIFO Scheduling：这里的调度还是操作系统的调度，当其他进程被绑定到单独的核上时，调度的竞争只会出现在单个核上的多个线程之间，这只会影响 `Null RPC server`，因为只有它是多个线程在一个核上。在默认的 `CFS` 调度下，线程还是按时间片来调度，所以先到的请求也可能后处理完成，因为线程被调度出去了，所以线程数过多的影响不仅仅是 context switch 的开销，还有调度的影响。解决办法同样是用 `realtime` 调度，因为相同优先级的线程是 `FIFO` 调度，请求也就是 `FIFO` 处理了。
-- Multicore：这点不是探讨实际和理论的差距的，而是验证在相同使用率的情况下，提高 worker 数量是否可以缓解 tail latency。因为论文里的测试是预先建立好连接，所有请求都发给这些连接，所以像 `TCP` 模式的 `Memcached` 和 `Nginx` 都无法从中获益，因为连接固定由单个线程处理，而 `Null RPC server` 和 `UDP` 模式的 `Memcached` 就会从中受益。如果使用短连接来测试的话，`Nginx` 也会有提升。
-- Interrupt Processing：这点非常有趣，我也是第一次知道，还学习了下 [linux 是如何处理网络包的](https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/)，在这里也记录一下。当网络包到达 NIC 时会用 DMA 拷贝到 RAM 中然后触发 hardware interrupt 通知 CPU 来处理，如果设备支持 [`Receive Side Scaling(RSS)`](https://en.wikipedia.org/wiki/Network_interface_controller#RSS) 或者有多个 `RX queue`，这些硬件中断会分发到不同的 CPU 处理，从而提升接收网络包的速度，`irqbalance` 进程就是干这事的。上面的操作是在 interrupt handler 上下文中执行的，这时可能会屏蔽硬件中断，导致中断丢失，为了减少屏蔽的时间，一些耗时较长的操作会延后来执行，这种机制的一种实现方式是 [`softIRQ`](https://linux-kernel-labs.github.io/refs/heads/master/lectures/interrupts.html#deferrable-actions)，linux 会创建核数个 `ksoftirqd` 线程来处理这些操作，网络包经过协议栈的处理就会在这些线程执行。默认情况下执行硬件中断的 CPU 会唤醒自己的 `ksoftirqd` 线程来处理网络包，但如果打开了 [`Receive Packet Steering(RPS)`](https://github.com/torvalds/linux/blob/v3.13/Documentation/networking/scaling.txt#L99-L222)，可能会唤醒其他 CPU 的 `ksoftirqd` 线程来处理网络包。这意味着一个网络包可能会经过 3 个 CPU 才能真正被应用线程处理到：处理硬件中断的 CPU -> 处理软件中断的 CPU -> 处理该套接字的 CPU。这套流程会导致请求处理时间受 context switch 和 CPU cache pollution 的影响而不再固定，也会导致请求处理不再是 `FIFO` 的，因为后来请求的包处理可能占用了处理先到请求的 CPU。解决办法是使用 dedicated CPU 来处理中断，应用线程不再受到中断的影响，保证了请求的 `FIFO` 调度，但缺点是会影响吞吐，毕竟应用可用的 CPU 数量变少了。`Solarflar` 有篇 [Filling the Pipe: A Guide to Optimising Memcache Performance onSolarFlare®Hardware](http://goo.gl/FqwtkN) 介绍了调优 `Memcached` 的步骤，其中就包含了这部分的详细操作流程。
+- background process：操作系统本身就有一些进程在运行，这些进程会占用应用的 CPU 时间。在默认的 CFS 调度下，即使提升了应用进程的优先级，其他进程的影响还是很大，因为 CFS 调度只是给高优先级进程更多的时间片，无法抢占其他进程，也无法完全消除其他进程的影响。而使用 realtime 调度能几乎消除掉其他进程的影响，因为它支持抢占。
+- Non-FIFO Scheduling：这里的调度还是操作系统的调度，当其他进程被绑定到单独的核上时，调度的竞争只会出现在单个核上的多个线程之间，这只会影响 `Null RPC server`，因为只有它是多个线程在一个核上。在默认的 CFS 调度下，线程还是按时间片来调度，所以先到的请求也可能后处理完成，因为线程被调度出去了，所以线程数过多的影响不仅仅是 context switch 的开销，还有调度的影响。解决办法同样是用 realtime 调度，因为相同优先级的线程是 FIFO 调度，请求也就是 FIFO 处理了。
+- Multicore：这点不是探讨实际和理论的差距的，而是验证在相同使用率的情况下，提高 worker 数量是否可以缓解 tail latency。因为论文里的测试是预先建立好连接，所有请求都发给这些连接，所以像 TCP 模式的 `Memcached` 和 `Nginx` 都无法从中获益，因为连接固定由单个线程处理，而 `Null RPC server` 和 UDP 模式的 `Memcached` 就会从中受益。如果使用短连接来测试的话，`Nginx` 也会有提升。
+- Interrupt Processing：这点非常有趣，我也是第一次知道，还学习了下 [linux 是如何处理网络包的](https://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/)，在这里也记录一下。当网络包到达 NIC 时会用 DMA 拷贝到 RAM 中然后触发 hardware interrupt 通知 CPU 来处理，如果设备支持 [`Receive Side Scaling(RSS)`](https://en.wikipedia.org/wiki/Network_interface_controller#RSS) 或者有多个 RX queue，这些硬件中断会分发到不同的 CPU 处理，从而提升接收网络包的速度，`irqbalance` 进程就是干这事的。上面的操作是在 interrupt handler 上下文中执行的，这时可能会屏蔽硬件中断，导致中断丢失，为了减少屏蔽的时间，一些耗时较长的操作会延后来执行，这种机制的一种实现方式是 [`softIRQ`](https://linux-kernel-labs.github.io/refs/heads/master/lectures/interrupts.html#deferrable-actions)，linux 会创建核数个 `ksoftirqd` 线程来处理这些操作，网络包经过协议栈的处理就会在这些线程执行。默认情况下执行硬件中断的 CPU 会唤醒自己的 `ksoftirqd` 线程来处理网络包，但如果打开了 [`Receive Packet Steering(RPS)`](https://github.com/torvalds/linux/blob/v3.13/Documentation/networking/scaling.txt#L99-L222)，可能会唤醒其他 CPU 的 `ksoftirqd` 线程来处理网络包。这意味着一个网络包可能会经过 3 个 CPU 才能真正被应用线程处理到：处理硬件中断的 CPU -> 处理软件中断的 CPU -> 处理该套接字的 CPU。这套流程会导致请求处理时间受 context switch 和 CPU cache pollution 的影响而不再固定，也会导致请求处理不再是 `FIFO` 的，因为后来请求的包处理可能占用了处理先到请求的 CPU。解决办法是使用 dedicated CPU 来处理中断，应用线程不再受到中断的影响，保证了请求的 `FIFO` 调度，但缺点是会影响吞吐，毕竟应用可用的 CPU 数量变少了。Solarflar 有篇 [Filling the Pipe: A Guide to Optimising Memcache Performance onSolarFlare®Hardware](http://goo.gl/FqwtkN) 介绍了调优 `Memcached` 的步骤，其中就包含了这部分的详细操作流程。
 - NUMA：这个就老生常谈了，TiDB 也经常遇到这个问题。linux 默认的 NUMA 内存分配策略是往死里分配一个 NUMA node 的内存，用完了再分配一下个的，而且应用内存划分不好的话，即使内存分配均匀了也会导致频繁的跨 NUMA node 的内存访问。解决办法就是绑核+多实例部署，TiDB 就是这么干的，但 TiKV 我们没强制要求这样做，我怀疑~~是 TiKV 延迟太高导致这部分延迟占比可忽略不计🤣~~ TiKV 的线程组碰巧比较符合 NUMA 这种模式，因为各线程组 workload 比较固定，也几乎不会访问相同的内存。
 - Power Saving Optimizations：这又是一个我从来没注意过的点。当系统使用率较低时，CPU Power Saving Optimizations 会极大的影响 tail latency，包括 CPU 部分停止工作和降频等。解决办法当然是关掉这功能。
 
@@ -43,7 +58,7 @@ categories: Reading
 
 ### 01-01 | *The Impact of Thread-Per-Core Architecture on Application Tail Latency* | 6☆
 
-这篇论文是研究 `thread-per-core` 发现的，因为非常仰慕 [`scylladb`](https://www.scylladb.com/)，它纯靠实现上的优化吊打相同架构的 `Cassandra`。这篇论文没讲什么东西，主要工作是实现了一个 `shared-nothing thread-per-core` 的纯内存 K/V 存储，然后和 `Memcached` 在各种调优网络中断的情况下比较 tail latency。远不如 *Tales of the Tail: Hardware, OS, and Application-level Sources of Tail Latency*，打 6☆ 的原因是让我发现了这篇论文😂。`thread-per-core` 架构有一些天然的优势，比如对 cache 非常友好、没有 context switch、没有线程同步等。但应用想要充分体现这些优势需要有特殊的资源管理策略、纯异步的编程方式，而且 `thread-per-core` 很容易被单个线程限死住，比如 workload 有倾斜，导致处理集中在单个线程上。如何做好这些都是值得深入研究的。
+这篇论文是研究 thread-per-core 发现的，因为非常仰慕 [`scylladb`](https://www.scylladb.com/)，它纯靠实现上的优化吊打相同架构的 `Cassandra`。这篇论文没讲什么东西，主要工作是实现了一个 shared-nothing thread-per-core 的纯内存 K/V 存储，然后和 `Memcached` 在各种调优网络中断的情况下比较 tail latency。远不如 *Tales of the Tail: Hardware, OS, and Application-level Sources of Tail Latency*，打 6☆ 的原因是让我发现了这篇论文😂。thread-per-core 架构有一些天然的优势，比如对 cache 非常友好、没有 context switch、没有线程同步等。但应用想要充分体现这些优势需要有特殊的资源管理策略、纯异步的编程方式，而且 thread-per-core 很容易被单个线程限死住，比如 workload 有倾斜，导致处理集中在单个线程上。如何做好这些都是值得深入研究的。
 
 ## 2020
 
