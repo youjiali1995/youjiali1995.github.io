@@ -7,11 +7,15 @@ categories: Reading
 
 {% include toc %}
 
+## 2022
+### 01-29 |《奈飞文化手册》| 10☆
+
+花了一个下午看完了，醍醐灌顶，奈飞这公司也太酷了，值得为这本书专门写篇博客。
+
+
 ## 2021
 
 ### 12-19 | *KVell: the Design and Implementation of a Fast Persistent Key-Value Store* | 8☆
-
-
 
 ### 12-19 | *SpanDB: A Fast, Cost-Effective LSM-tree Based KV Store on Hybrid Storage* | 6☆
 
@@ -21,7 +25,7 @@ SpanDB 在 RocksDB 基础上做了这几个事情：
 2. 为了降低存储成本，只有 WAL 和前几层的 SST 在 SD（speed disk，也就是 NVMe SSD）上，更高层的会放在 CD（capacity disks，SATA SSD 之类的）上，还会根据 SD 和 CD 的压力情况动态调整新 SST 的存放位置。
 3. 有一定的自适应策略来避免 SD 压力饱和导致影响写 WAL 延迟、减轻 compaction 对 WAL 的影响，但都是非常基础的策略。
 
-取得的效果还是不错的，ycsb 测试全面提升，纯写场景 8 倍吞吐且延迟更低，但这篇文章没什么新意，唯一的优点是好落地，类似的优化在工业界应该不少。讲道理这篇文章能中顶会（FAST 2021）我是比较惊讶的，`seastar` 在 2015 年就把最佳实践告诉了世界，但是 2021 年了真正用上的系统还是没多少，而且提供异步接口的存储引擎适用型并不好，异步更适合在统一的框架下执行，而不是内置异步 runtime。
+取得的效果还是不错的，ycsb 测试全面提升，纯写场景 8 倍吞吐且延迟更低，但这篇文章没什么新意，唯一的优点是好落地，类似的优化在工业界应该不少。讲道理这篇文章能中顶会（FAST 2021）我是比较惊讶的，`seastar` 在 2015 年就把最佳实践告诉了世界，但是 2021 年了真正用上的系统还是没多少，而且提供异步接口的存储引擎适用性并不好，强行嵌入到应用里无法发挥它的最大能量，异步更适合和应用一起在统一的框架下执行，而不是单独内置异步 runtime。
 
 
 ### 01-01 | *Tales of the Tail: Hardware, OS, and Application-level Sources of Tail Latency* | 10☆
