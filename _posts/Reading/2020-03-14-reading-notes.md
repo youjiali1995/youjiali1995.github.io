@@ -9,6 +9,9 @@ categories: Reading
 
 ## 2022
 
+### 03-19 | *Latch-free Synchronization in Database Systems: Silver Bullet or Fool’s Gold?* | 3☆
+在相同的 benchmark 框架下对比了 latch-based 和 latch-free 结构的性能和扩展性，结论是半斤八两，想要提升扩展性就要减少共享，TMD。
+
 ### 02-03 |《不拘一格》| 10☆
 
 2020 年新出的介绍奈飞文化的书，更具可操作性。
