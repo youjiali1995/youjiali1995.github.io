@@ -8,6 +8,8 @@ categories: Reading
 {% include toc %}
 
 ## 2022
+### 03-23 | *Designing Access Methods: The RUM Conjecture* | 7☆
+提出了 RUM Conjecture：优化其中两项必定以另外一项为代价。这里的 RUM overhead 指的是放大，即读/更新/空间放大，没有考虑访问模式的代价。还有篇相关的论文 *Design Tradeoffs of Data Access Methods* 介绍了很多单独为某个方面优化的数据结构和论文，可以当个目录看看。
 
 ### 03-19 | *Latch-free Synchronization in Database Systems: Silver Bullet or Fool’s Gold?* | 3☆
 在相同的 benchmark 框架下对比了 latch-based 和 latch-free 结构的性能和扩展性，结论是半斤八两，想要提升扩展性就要减少共享，TMD。
