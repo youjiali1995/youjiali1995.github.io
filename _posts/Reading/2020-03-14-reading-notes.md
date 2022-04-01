@@ -8,6 +8,23 @@ categories: Reading
 {% include toc %}
 
 ## 2022
+
+### 04-01 | *File Systems Unfit as Distributed Storage Backends: Lessons from 10 Years of Ceph Evolution* (2019) | 6☆
+
+介绍了 Ceph 绕过 local file system 直接在 raw storage device 上实现的 storage backend —— BlueStore。local file system 在这种场景下主要有这几个问题：不支持事务或者说个性化功能在 file system 上实现代价比较高、metadata 操作太重（`readdir` 之类的操作）、应用程序对 I/O 栈的掌控、以及无法很快用上更先进的存储设备接口。BlueStore 的吞吐、延迟和稳定性都比上一代好一倍左右，具体实现看论文吧，没什么特别让人有启发的，值得一提的是再下一代的 storage backend 是基于 seastar 的。
+
+### 03-31 | *Evolution of Development Priorities in Key-value Stores Serving Large-scale Applications: The RocksDB Experience* (2021) | 7☆
+
+介绍了 RocksDB 这几年开发过程中的经验教训，没什么特别有启发的，挑几个介绍一下：
+
+- LSM-tree 仍是 SSD 时代好的选择，考虑到 SSD 的价格、读写特性和 FTL 的算法。LSM-tree 通过调整 compaction 策略来选择 RUM。
+
+- RocksDB 的优化目标从写放大到空间放大再到 CPU，因为发现大部分应用场景下 disk 性能不是瓶颈，而且应用包括 RocksDB 也无法充分利用越来越快的 disk，所以转而去优化空间放大、CPU。
+- 单个进程或者机器上可能会有很多 RocksDB 实例，全局的资源控制能力也是有必要的。
+- compaction 除了会创建新的 SST 还会删掉旧的 SST，而删 SST 也需要限流，因为删文件也会触发 I/O 或者调用 SSD 的 TRIM 命令，即使是 TRIM 也会影响性能，因为同样有 I/O，可能会触发 SSD 内部的 GC。
+- 因为 RocksDB 服务的场景很多、数据量很大，经常会遇到 silent corruptions，所以 RocksDB 有很多 checksum 检测：K/V、WAL、block、file 级别的等，对于数据错误需要尽可能早地检测出来且每一层都需要做。
+- RocksDB 目前的接口没办法很好的支持 MVCC 和分布式事务，解决办法是提供 application-specified timestamp 接口，论文里写到用 DB-Bench 压测有 1.2-2.0 倍的吞吐提升。我之前一直以为这东西没什么用，现在看起来对点查之类的比较有用，因为可以直接用 get 而不是 seek，而且 bloom filter 也可以派上用场了。
+
 ### 03-23 | *Designing Access Methods: The RUM Conjecture* | 7☆
 提出了 RUM Conjecture：优化其中两项必定以另外一项为代价。这里的 RUM overhead 指的是放大，即读/更新/空间放大，没有考虑访问模式的代价。还有篇相关的论文 *Design Tradeoffs of Data Access Methods* 介绍了很多单独为某个方面优化的数据结构和论文，可以当个目录看看。
 
