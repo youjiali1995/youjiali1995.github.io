@@ -8,6 +8,10 @@ categories: Reading
 {% include toc %}
 
 ## 2022
+### 04-02 | *Aerospike: Architecture of a Real-Time Operational DBMS* (2016) | 4☆
+
+看这篇论文是因为 Aerospike [声称](https://aerospike.com/lp/aerospike-vs-scylladb-brief-comparison/)是 ScyllaDB 的 7 倍吞吐和 1/3 的延迟，但看了论文没什么特别亮眼的地方，线程模型和实现并没有 seastar 好，如果 benchmark 结果确实如他们所说的话，感觉原因出在数据模型和架构上。
+
 
 ### 04-01 | *File Systems Unfit as Distributed Storage Backends: Lessons from 10 Years of Ceph Evolution* (2019) | 6☆
 
@@ -18,7 +22,6 @@ categories: Reading
 介绍了 RocksDB 这几年开发过程中的经验教训，没什么特别有启发的，挑几个介绍一下：
 
 - LSM-tree 仍是 SSD 时代好的选择，考虑到 SSD 的价格、读写特性和 FTL 的算法。LSM-tree 通过调整 compaction 策略来选择 RUM。
-
 - RocksDB 的优化目标从写放大到空间放大再到 CPU，因为发现大部分应用场景下 disk 性能不是瓶颈，而且应用包括 RocksDB 也无法充分利用越来越快的 disk，所以转而去优化空间放大、CPU。
 - 单个进程或者机器上可能会有很多 RocksDB 实例，全局的资源控制能力也是有必要的。
 - compaction 除了会创建新的 SST 还会删掉旧的 SST，而删 SST 也需要限流，因为删文件也会触发 I/O 或者调用 SSD 的 TRIM 命令，即使是 TRIM 也会影响性能，因为同样有 I/O，可能会触发 SSD 内部的 GC。
