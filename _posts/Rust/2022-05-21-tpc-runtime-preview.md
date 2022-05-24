@@ -2,7 +2,6 @@
 title: 写一个 Rust TPC Runtime(零) -- Preview
 layout: post
 categories: Rust
-published: false
 ---
 
 计划从零写一个 rust TPC async runtime，原因有这几个：一是我看过几个但没自己写过，总觉得差点意思；二是它对系统至关重要，最好能自己掌控和定制；三是要支持 `epoll`、AIO 和 io_uring，目前的 rust runtime 要么只支持 `epoll` 没有 async disk I/O，要么只支持 io_uring，对 kernel 要求较高。

@@ -3,7 +3,6 @@ title: 写一个 Rust TPC Runtime(一) -- Task
 layout: post
 excerpt: 介绍 Task 的设计和实现。
 categories: Rust
-published: false
 ---
 
 {% include toc %}
