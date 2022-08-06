@@ -8,6 +8,15 @@ categories: Reading
 {% include toc %}
 
 ## 2022
+
+### 08-03 | Amazon DynamoDB: A Scalable, Predictably Performant, and Fully Managed NoSQL Database Service (2022) | 9☆
+
+原来 DynamoDB 和 Dynamo 不是一个东西！DynamoDB 的 data model、sharding、replication 等都完全变了。这篇论文的重点是 **service**，database 和 database service 差了十万八千里，service 需要隐藏各种细节，对上只需要提供稳定的服务即可，对于 DymanoDB 来说，就是不受访问模式/数据量/故障影响的、稳定的延迟。DynamoDB 也是 range partition，每个 partition 是一个 paxos group，每个 storage node 上有多个 partition；是 multi-tenant 架构的，实现了 admission control 来做资源隔离，论文重点介绍了这部分的演进，从 partition 级别的控制到有 burst 和自适应再到有 global 级别的控制；其他部分的优化就不在这里介绍了，感兴趣的就看论文吧，还是很实用的，虽然没有很多细节。最后要感叹一下 DynamoDB 确实牛逼。
+
+### 08-01 | *Dynamo: Amazon’s Highly Available Key-value Store* (2007) | 8☆
+
+我才不会告诉你们我从没看过 Dynamo 的论文。Dynamo 在 2007 年的架构影响了一批 NoSQL 的设计，它设计的主要目标是高可用（重点是写）和可选择的 SLA，用到的技术有 consistent hash、vector clock、sloppy quorum、gossip 等，也很复杂了，而且 API 看起来非常不易用。
+
 ### 04-02 | *Aerospike: Architecture of a Real-Time Operational DBMS* (2016) | 4☆
 
 看这篇论文是因为 Aerospike [声称](https://aerospike.com/lp/aerospike-vs-scylladb-brief-comparison/)是 ScyllaDB 的 7 倍吞吐和 1/3 的延迟，但看了论文没什么特别亮眼的地方，线程模型和实现并没有 seastar 好，如果 benchmark 结果确实如他们所说的话，感觉原因出在数据模型和架构上。
