@@ -3,7 +3,6 @@ title: TPC Raft Store(一) -- Raft
 layout: post
 excerpt: 简单介绍下几个 raft 库的实现。
 categories: TiKV
-published: false
 ---
 
 {% include toc %}
